@@ -15,7 +15,7 @@ name = "twopoint-validate"
 path = "src/bin/validate.rs"
 
 [dependencies]
-bosque = "0.3"
+bosque = "0.2"
 kuva = { git = "https://github.com/Psy-Fer/kuva" }
 rand = "0.8"
 rand_distr = "0.4"

@@ -7,7 +7,8 @@
 //! The overlap between adjacent levels provides consistency checks and
 //! the scatter across subsamples gives empirical variance estimates.
 
-use crate::estimator::XiEstimate;
+// TODO: re-enable when ladder implementation uses XiEstimate
+// use crate::estimator::XiEstimate;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 

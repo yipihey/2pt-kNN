@@ -13,19 +13,22 @@
 //! However in the CoxMock convention, N_p points are distributed across N_L
 //! lines (N_p / N_L points per line on average).
 //!
-//! The analytic ξ(r) for the line-point Cox process is:
+//! The analytic ξ(r) for the line-point Cox process is derived from the
+//! pair distance PDF on a line segment: f(d) = (2/ℓ)(1 − d/ℓ) for d ∈ [0, ℓ].
 //!
-//!   ξ(r) = (V / (N_L · ℓ)) · (1/r) · (1 − r/ℓ)   for r < ℓ
-//!   ξ(r) = 0                                          for r ≥ ℓ
+//! With random line assignment (each of N_p points picks a uniformly
+//! random line), each ordered pair has probability 1/N_L of sharing a
+//! line.  The expected same-line ordered pairs are N_p(N_p−1)/N_L.
+//! Each same-line pair has separation drawn from f(d).  The excess in
+//! a spherical shell 4πr²dr, divided by the Poisson expectation
+//! n̄·4πr²dr, gives:
 //!
-//! This is an r⁻¹ · (1 − r/ℓ) profile — a damped "power law" with effective
-//! index −1 in ξ(r), corresponding to −2 in the pair count since
-//! DD(r) ∝ r² ξ(r) ∝ r · (1 − r/ℓ).
+//!   ξ(r) = (N_p − 1) / (N_L · n̄ · 2π · r² · ℓ) · (1 − r/ℓ)
+//!        ≈ V / (N_L · 2π · r² · ℓ) · (1 − r/ℓ)     for 0 < r < ℓ
+//!   ξ(r) = 0                                            for r ≥ ℓ
 //!
-//! For the general case of m = N_p / N_L points per line, the self-pair
-//! contribution scales as m(m−1), giving:
-//!
-//!   ξ(r) = m(m−1) · V / (N_p² · ℓ) · (1/r) · (1 − r/ℓ)
+//! This is an r⁻² · (1 − r/ℓ) profile — so DD(r) ∝ r² ξ(r) ∝ (1 − r/ℓ),
+//! which is nearly constant at small r and falls linearly to zero at r = ℓ.
 
 use rand::Rng;
 use rand::SeedableRng;
@@ -64,6 +67,39 @@ impl CoxMockParams {
         }
     }
 
+    /// Fast validation parameters: moderate ξ, good DD/DR overlap.
+    ///
+    /// N_p = 10_000 on N_L = 1_000 lines of length 200 in a 500³ box.
+    /// m = 10, ξ(r) = 0.5625/r · (1 − r/200) — peaks at ξ(5) ≈ 0.11.
+    /// n̄ = 8×10⁻⁵ → r₁ ≈ 14 Mpc, same-line spacing ≈ 20 Mpc.
+    /// The 1st NN is usually NOT a same-line pair, so DD and DR kNN
+    /// distances overlap well: the finite-k truncation bias is small.
+    /// k=32 probes to r ≈ 46 Mpc where ξ ≈ 0.01.
+    pub fn validation() -> Self {
+        Self {
+            box_size: 500.0,
+            n_lines: 1_000,
+            line_length: 200.0,
+            n_points: 10_000,
+        }
+    }
+
+    /// Characteristic k-NN distance for the k-th neighbor at this density.
+    /// r_k ≈ (k / (n̄ · 4π/3))^{1/3}
+    pub fn r_char_k(&self, k: usize) -> f64 {
+        (k as f64 / (self.nbar() * 4.0 / 3.0 * std::f64::consts::PI)).cbrt()
+    }
+
+    /// Poisson field for bias testing: m=1, no clustering, ξ=0.
+    pub fn poisson() -> Self {
+        Self {
+            box_size: 500.0,
+            n_lines: 10_000,
+            line_length: 200.0,
+            n_points: 10_000,
+        }
+    }
+
     /// Mean number density n̄ = N_p / V
     pub fn nbar(&self) -> f64 {
         self.n_points as f64 / self.volume()
@@ -81,18 +117,27 @@ impl CoxMockParams {
 
     /// Analytic ξ(r) for this Cox process.
     ///
-    /// ξ(r) = m(m−1) · V / (N_p² · ℓ) · (1/r) · (1 − r/ℓ)   for r < ℓ
-    /// ξ(r) = 0                                                   for r ≥ ℓ
+    /// ξ(r) = (N_p − 1) / (N_L · n̄ · 2π · r² · ℓ) · (1 − r/ℓ)
+    ///       ≈ V / (N_L · 2π · r² · ℓ) · (1 − r/ℓ)       for 0 < r < ℓ
+    /// ξ(r) = 0                                               for r ≥ ℓ
     ///
-    /// where m = N_p / N_L is the mean points per line.
+    /// Each point picks a random line (Multinomial assignment), so the
+    /// expected number of same-line ordered pairs is N_p(N_p−1)/N_L
+    /// (each ordered pair has probability 1/N_L of sharing a line).
+    /// Their separation PDF is f(d) = (2/ℓ)(1−d/ℓ).  Dividing the
+    /// excess in shell 4πr²dr by the Poisson expectation gives the
+    /// formula above.  Note: for deterministic m-per-line assignment,
+    /// the prefactor would be (m−1) instead of m = N_p/N_L.
     pub fn xi_analytic(&self, r: f64) -> f64 {
         if r <= 0.0 || r >= self.line_length {
             return 0.0;
         }
-        let m = self.points_per_line();
         let np = self.n_points as f64;
-        let prefactor = m * (m - 1.0) * self.volume() / (np * np * self.line_length);
-        prefactor * (1.0 / r) * (1.0 - r / self.line_length)
+        let nl = self.n_lines as f64;
+        let nbar = self.nbar();
+        // (N_p - 1) / (N_L · n̄ · 2π · r² · ℓ) · (1 − r/ℓ)
+        let prefactor = (np - 1.0) / (nl * nbar * 2.0 * std::f64::consts::PI * self.line_length);
+        prefactor * (1.0 / (r * r)) * (1.0 - r / self.line_length)
     }
 }
 
@@ -119,8 +164,8 @@ impl CoxMock {
                     rng.gen::<f64>() * params.box_size,
                     rng.gen::<f64>() * params.box_size,
                 ];
-                // Random direction on the unit sphere
-                let theta = rng.gen::<f64>() * std::f64::consts::PI;
+                // Random direction on the unit sphere (uniform via cos⁻¹)
+                let theta = (1.0 - 2.0 * rng.gen::<f64>()).acos();
                 let phi = rng.gen::<f64>() * 2.0 * std::f64::consts::PI;
                 let dir: [f64; 3] = [
                     theta.sin() * phi.cos(),

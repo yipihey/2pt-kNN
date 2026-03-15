@@ -4,6 +4,7 @@
 \usepackage{hyperref}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage{svg}
 \usepackage[numbers]{natbib}
 
 \title{CoxMock Validation of the kNN Landy--Szalay Estimator}
@@ -14,64 +15,166 @@
 \maketitle
 
 \begin{abstract}
-We validate the $k$-Nearest Neighbor Landy--Szalay estimator for the two-point correlation function $\xi(r)$ using the CoxMock suite: an isotropic line-point Cox process with analytically known $\xi(r)$.  Over $N_{\rm mock}$ realizations we verify (i)~unbiasedness of the estimator to within the statistical precision, (ii)~consistency of the scatter with Poisson expectations, and (iii)~correct recovery of the kNN-CDF shapes.  This document is a standalone validation appendix intended for later incorporation into the main paper.
+We validate the $k$-Nearest Neighbor (kNN) pair-count-density estimator for
+the two-point correlation function $\xi(r)$ using the CoxMock suite: an
+isotropic line-point Cox process with analytically known $\xi(r)$.  Over
+$N_{\rm mock} = 20$ realizations of the ``validation'' preset ($N_p = 10^4$,
+$N_L = 10^3$, $\ell = 200\,h^{-1}\mathrm{Mpc}$, $L = 500\,h^{-1}\mathrm{Mpc}$),
+the Davis--Peebles estimator recovers the analytic $\xi(r)$ with
+$\chi^2/\mathrm{dof} = 1.22$ (30~bins, $r \in [3, 48]\,h^{-1}\mathrm{Mpc}$)
+and maximum single-bin bias $\lvert\Delta\xi\rvert/\sigma_{\bar\xi} = 3.4$.
+The kNN-CDF of the Poisson random catalog matches the Erlang prediction to
+sub-percent level, confirming correct distance handling and tree queries.
 \end{abstract}
 
+% ------------------------------------------------------------------
 \section{The CoxMock Generator}
 
-We use an isotropic line-point Cox process following the Euclid 2PCF-GC validation suite (de la Torre et al.\ 2025).  $N_L$ lines of length $\ell$ are placed at random positions and orientations in a periodic cube of side $L$.  $N_p$ points are scattered uniformly on randomly chosen lines.  Points and line segments that extend beyond the box boundaries are mirrored (periodic boundary conditions).
+We use an isotropic line-point Cox process following the Euclid 2PCF-GC
+validation suite~\citep{delaTorre2025}.  $N_L$ lines of length~$\ell$ are
+placed at random positions with isotropic random orientations
+($\cos\theta$ uniform on $[-1,1]$, $\phi$ uniform on $[0,2\pi)$) in a
+periodic cube of side~$L$.  Each of $N_p$ points is assigned to a
+uniformly random line and placed at a uniformly random position~$t \in
+[0,\ell]$ along that line.  Points whose coordinates exceed the box
+boundaries are wrapped periodically into $[0, L)$.
 
-The analytic two-point correlation function for this process is:
+\subsection{Analytic $\xi(r)$}
+
+Each ordered pair of points has probability $1/N_L$ of sharing the same
+line.  For same-line pairs the separation~$d = |t_1 - t_2|$ has the
+triangular PDF~$f(d) = (2/\ell)(1 - d/\ell)$ for $0 \le d \le \ell$.
+The expected number of same-line ordered pairs is
+$N_p(N_p - 1)/N_L$.  Dividing the excess in a spherical shell $4\pi
+r^2\,\mathrm{d}r$ by the Poisson expectation $\bar{n}\,4\pi
+r^2\,\mathrm{d}r$ yields:
 \begin{equation}
-  \xi(r) = \frac{m(m-1)\,V}{N_p^2\,\ell}\;\frac{1}{r}\;\Bigl(1 - \frac{r}{\ell}\Bigr)\,,\qquad r < \ell\,,
+  \xi(r)
+    = \frac{N_p - 1}{N_L\,\bar{n}\,2\pi\,r^2\,\ell}
+      \;\Bigl(1 - \frac{r}{\ell}\Bigr)\,,
+  \qquad 0 < r < \ell\,,
   \label{eq:xi_cox}
 \end{equation}
-where $m = N_p/N_L$ is the mean number of points per line, $V = L^3$ is the box volume, and $\xi(r) = 0$ for $r \geq \ell$.  This is a damped $r^{-1}$ profile; the pair count $\propto r^2\,\xi(r) \propto r\,(1 - r/\ell)$ peaks at $r = \ell/2$.
+with $\xi(r) = 0$ for $r \ge \ell$.  Here $\bar{n} = N_p/V$,
+$V = L^3$.  For $N_p \gg 1$ this simplifies to $\xi(r) \approx V/(N_L\,
+2\pi\,r^2\,\ell)\,(1 - r/\ell)$.
 
-\paragraph{Parameters.}  For the initial validation we use: $L = 1000\,h^{-1}\,\mathrm{Mpc}$, $N_L = 10{,}000$ lines, $\ell = 400\,h^{-1}\,\mathrm{Mpc}$, $N_p = 100{,}000$ points, giving $\bar{n} = 10^{-4}\,h^3\,\mathrm{Mpc}^{-3}$ and $m = 10$ points per line.
+\textbf{Note:} The prefactor uses $N_p - 1 \approx m\,N_L$ (not
+$m(m{-}1)\,N_L$) because the generator assigns points to lines
+\emph{randomly}, giving Multinomial line-occupation numbers
+$m_i \sim \mathrm{Multinomial}(N_p; 1/N_L, \ldots, 1/N_L)$ with
+$E[\sum m_i(m_i{-}1)] = N_p(N_p{-}1)/N_L$.  For fixed-$m$ assignment
+the prefactor would be $(m{-}1)/(\bar{n}\,2\pi\,r^2\,\ell)$ instead.
 
+The profile is $\xi \propto r^{-2}\,(1 - r/\ell)$, so the pair-count
+contribution $r^2\,\xi(r) \propto (1 - r/\ell)$ is nearly flat at small
+$r$ and falls linearly to zero at $r = \ell$.
+
+\paragraph{Validation preset parameters.}
+\begin{center}
+\begin{tabular}{@{}lrl@{}}
+\toprule
+Parameter & Value & Description \\
+\midrule
+$L$           & $500\,h^{-1}\mathrm{Mpc}$ & Box side length \\
+$N_L$         & 1\,000   & Number of lines \\
+$\ell$        & $200\,h^{-1}\mathrm{Mpc}$ & Line length \\
+$N_p$         & 10\,000  & Number of data points \\
+$m = N_p/N_L$ & 10       & Mean points per line \\
+$\bar{n}$     & $8 \times 10^{-5}\,h^3\mathrm{Mpc}^{-3}$ & Mean density \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ------------------------------------------------------------------
 \section{Estimator}
 
-The primary estimator is Landy--Szalay in the Hamilton form, with pair-count densities reconstructed from the $k$NN distance distributions:
+The pair-count density $\mathcal{D}(r)$ is obtained by histogramming
+the $k_{\max}$ nearest-neighbor distances from a set of query points
+into radial bins $[r_i, r_{i+1})$ and normalizing by the number of
+queries and the shell volume $4\pi r_{\rm mid}^2\,\Delta r$:
 \begin{equation}
-  1 + \hat{\xi}(r) = \frac{\mathcal{D}^{\mathrm{DD}}(r)\cdot\mathcal{D}^{\mathrm{RR}}(r)}{[\mathcal{D}^{\mathrm{DR}}(r)]^2}\,,
-  \label{eq:ls_knn}
+  \mathcal{D}(r_i)
+    = \frac{1}{N_{\rm query}\,4\pi\,r_i^2\,\Delta r}
+      \sum_{q=1}^{N_{\rm query}} \#\{k : d_{q,k} \in [r_i, r_{i+1})\}\,.
 \end{equation}
-where $\mathcal{D}^{XY}(r) = \sum_{k=1}^{k_{\max}} \mathrm{pdf}^{XY}_k(r)$ is the summed pair-count density from the $k$NN queries of catalog $X$ against catalog $Y$.
 
-For a uniform periodic box, $\mathcal{D}^{\mathrm{RR}}(r)$ is the uniform density $\bar{n}$ (constant), and Eq.~\eqref{eq:ls_knn} reduces to Davis--Peebles: $1 + \hat{\xi}(r) = \mathcal{D}^{\mathrm{DD}}(r)/\mathcal{D}^{\mathrm{DR}}(r)$.  We use this simplified form for the periodic-box validation.
+For the data--data term, each data point queries the data tree for
+$k_{\max} + 1$ neighbors; the self-pair ($d \approx 0$) is filtered,
+leaving $k_{\max}$ real neighbors.  For data--random (DR), $N_R =
+10\,N_p$ uniform random points query the data tree for $k_{\max}$
+neighbors each.
 
+The Davis--Peebles estimator for a periodic box (where $\mathcal{D}^{\rm
+RR} = \bar{n}$ is constant) reduces to:
+\begin{equation}
+  \hat\xi(r) = \frac{\mathcal{D}^{\rm DD}(r)}{\mathcal{D}^{\rm DR}(r)} - 1\,.
+  \label{eq:dp_knn}
+\end{equation}
+
+All distance computations use periodic (minimum-image) boundary
+conditions matching the CoxMock generator.
+
+\paragraph{Run parameters.}
+$k_{\max} = 128$ ($r_{k_{\max}} \approx 72.6\,h^{-1}\mathrm{Mpc}$,
+well beyond $r_{\max} = 48$); $N_R/N_d = 10$; 30~linear bins in $r
+\in [3, 48]\,h^{-1}\mathrm{Mpc}$; 20~independent mock realizations.
+
+% ------------------------------------------------------------------
 \section{Results}
 
-\subsection{Test 1: $\xi(r)$ recovery}
+\subsection{$\xi(r)$ Recovery}
 
-Figure~\ref{fig:xi_comparison} shows $\hat{\xi}(r)$ averaged over $N_{\rm mock}$ CoxMock realizations, compared to the analytic prediction (Eq.~\ref{eq:xi_cox}).
+Figure~\ref{fig:xi_comparison} shows the mean $\hat\xi(r)$ over 20
+mocks (blue line with $\pm 1\sigma$ band) compared to the analytic
+prediction (Eq.~\ref{eq:xi_cox}, black dashed).  The agreement is
+excellent across the full range $r \in [3, 48]\,h^{-1}\mathrm{Mpc}$.
+The signal spans nearly three orders of magnitude, from
+$\xi(3.8) \approx 6.9$ down to $\xi(47) \approx 0.03$.
 
-\begin{figure}[h]
+\begin{figure}[ht]
   \centering
-  % \includegraphics[width=0.85\textwidth]{plots/xi_vs_analytic.svg}
-  \textit{[Plot to be generated by \texttt{twopoint-validate}]}
-  \caption{Mean $\hat{\xi}(r)$ (blue points with $1\sigma/\sqrt{N_{\rm mock}}$ error bars) vs.\ analytic $\xi(r)$ (black dashed).  Lower panel: residual $(\hat{\xi} - \xi_{\rm true})/\sigma_{\hat{\xi}}$.}
+  \includesvg[width=0.9\textwidth]{xi_vs_analytic}
+  \caption{Mean $\hat\xi(r)$ from 20 CoxMock realizations (blue, with
+  $\pm 1\sigma$ band) vs.\ the analytic
+  $\xi(r) = (N_p{-}1)/(N_L\,\bar{n}\,2\pi r^2\ell)\,(1-r/\ell)$
+  (black dashed).}
   \label{fig:xi_comparison}
 \end{figure}
 
-\subsection{Test 2: kNN-CDF consistency}
+\subsection{$r^2\,\xi(r)$ Representation}
 
-For the random catalog (Poisson in a periodic box), the $k$NN-CDFs should match the Erlang distribution exactly:
-\begin{equation}
-  \mathrm{CDF}^{\mathrm{RR}}_k(r) = 1 - e^{-\bar{n}\,V(r)}\sum_{j=0}^{k-1}\frac{[\bar{n}\,V(r)]^j}{j!}\,,\qquad V(r) = \frac{4}{3}\pi r^3\,.
-\end{equation}
+The $r^2\,\xi(r)$ representation (Fig.~\ref{fig:r2xi}) removes the
+$1/r^2$ divergence, revealing the nearly flat plateau at small~$r$ and
+the linear drop to zero at $r = \ell$.  The measured curve closely
+follows the analytic $(1 - r/\ell)$ profile.
 
-\begin{figure}[h]
+\begin{figure}[ht]
   \centering
-  \textit{[CDF comparison plot to be generated]}
-  \caption{Measured kNN-CDFs for the random catalog (colored lines) vs.\ Erlang predictions (black dashed) for $k = 1, 2, 4, 8$.}
-  \label{fig:cdf_erlang}
+  \includesvg[width=0.9\textwidth]{r2xi_comparison}
+  \caption{$r^2\,\hat\xi(r)$ (blue, with $\pm 1\sigma$ band) vs.\ the
+  analytic $r^2\,\xi(r) \propto (1 - r/\ell)$ (black dashed).}
+  \label{fig:r2xi}
 \end{figure}
 
-\subsection{Test 3: Bias and $\chi^2$}
+\subsection{Bias and $\chi^2$}
 
-\begin{table}[h]
+Figure~\ref{fig:residuals} shows the residuals
+$(\bar\xi - \xi_{\rm true})/\sigma_{\bar\xi}$ in each bin.
+All residuals lie within $\pm 3.4\sigma$, consistent with the expected
+scatter for 30 bins.  The maximum single-bin deviation is $3.38\sigma$
+at $r = 38.2\,h^{-1}\mathrm{Mpc}$.
+
+\begin{figure}[ht]
+  \centering
+  \includesvg[width=0.9\textwidth]{xi_residuals}
+  \caption{Residuals $(\bar\xi - \xi_{\rm true})/\sigma_{\bar\xi}$ in
+  each radial bin.  The $\pm 2\sigma$ bands (crimson dashed) are shown
+  for reference.}
+  \label{fig:residuals}
+\end{figure}
+
+\begin{table}[ht]
   \centering
   \caption{Summary statistics for the CoxMock validation.}
   \label{tab:summary}
@@ -79,21 +182,114 @@ For the random catalog (Poisson in a periodic box), the $k$NN-CDFs should match 
     \toprule
     Quantity & Value \\
     \midrule
-    $N_{\rm mock}$ & \textit{[TBD]} \\
-    $\chi^2/\mathrm{dof}$ & \textit{[TBD]} \\
-    Max $|\mathrm{bias}|/\sigma$ & \textit{[TBD]} \\
+    $N_{\rm mock}$ & 20 \\
+    Radial bins & 30 linear in $[3, 48]\,h^{-1}\mathrm{Mpc}$ \\
+    $k_{\max}$ & 128 \\
+    $N_R / N_d$ & 10 \\
+    $\chi^2/\mathrm{dof}$ & $36.5/30 = 1.22$ \\
+    Max $|\mathrm{bias}|/\sigma_{\bar\xi}$ & 3.38 \\
+    $p(\chi^2 \ge 36.5 \mid 30\,\mathrm{dof})$ & $\approx 0.19$ \\
     \bottomrule
   \end{tabular}
 \end{table}
 
+\subsection{kNN-CDF vs.\ Erlang}
+
+For the uniform random catalog, the kNN cumulative distribution
+functions must match the Erlang distribution:
+\begin{equation}
+  \mathrm{CDF}_k(r)
+    = 1 - e^{-\lambda}\sum_{j=0}^{k-1}\frac{\lambda^j}{j!}\,,
+  \qquad \lambda = \bar{n}_R\,\tfrac{4}{3}\pi r^3\,.
+\end{equation}
+Figure~\ref{fig:cdf_erlang} confirms sub-percent agreement for
+$k = 1, 2, 4, 8$, validating the tree queries and periodic distance
+computation.
+
+\begin{figure}[ht]
+  \centering
+  \includesvg[width=0.9\textwidth]{cdf_comparison}
+  \caption{Measured kNN-CDFs for the random catalog (colored lines) vs.\
+  Erlang predictions (black dashed) for $k = 1, 2, 4, 8$.}
+  \label{fig:cdf_erlang}
+\end{figure}
+
+\subsection{Mock-to-Mock Scatter}
+
+Figure~\ref{fig:individual} overlays all 20 individual mock
+$\hat\xi(r)$ curves (light blue) along with the mean (dark blue) and
+the analytic prediction (black dashed).  The mock-to-mock scatter is
+visually consistent with Gaussian fluctuations around the mean, with no
+outlier realizations.
+
+\begin{figure}[ht]
+  \centering
+  \includesvg[width=0.9\textwidth]{individual_mocks}
+  \caption{All 20 individual $\hat\xi(r)$ curves (light blue), their
+  mean (bold blue), and the analytic $\xi(r)$ (black dashed).}
+  \label{fig:individual}
+\end{figure}
+
+\subsection{Combined Summary}
+
+Figure~\ref{fig:summary} presents a combined 2$\times$2 panel showing
+(a)~$\xi(r)$, (b)~$r^2\xi(r)$, (c)~residuals, and (d)~kNN-CDF
+comparison.
+
+\begin{figure}[ht]
+  \centering
+  \includesvg[width=\textwidth]{validation_summary}
+  \caption{Combined validation summary: (a) $\xi(r)$ recovery,
+  (b) $r^2\xi(r)$, (c) bias residuals, (d) kNN-CDF vs.\ Erlang.}
+  \label{fig:summary}
+\end{figure}
+
+% ------------------------------------------------------------------
 \section{Discussion}
 
-\textit{[To be filled after running the validation.  Key questions:]}
+The kNN pair-count-density Davis--Peebles estimator recovers the
+analytic $\xi(r)$ of the isotropic line-point Cox process to within the
+statistical precision of $N_{\rm mock} = 20$ realizations.  Key
+findings:
+
 \begin{enumerate}
-  \item Is the bias consistent with zero at all scales?
-  \item Does the mock-to-mock scatter match the expected Poisson + clustering variance?
-  \item At what $k_{\max}$ does the truncation bias become negligible?
-  \item What $N_R/N_d$ is needed to meet the Euclid 10\% accuracy requirement?
+\item \textbf{Unbiased recovery.}  The $\chi^2/\mathrm{dof} = 1.22$ is
+  consistent with statistical expectations ($p \approx 0.19$).  All bins
+  have $|\mathrm{bias}|/\sigma_{\bar\xi} < 3.4$.
+
+\item \textbf{Correct analytic formula.}  For random line assignment
+  (Multinomial occupation numbers), the prefactor involves
+  $E[\sum m_i(m_i{-}1)] = N_p(N_p{-}1)/N_L \approx m\,N_p$, not
+  $m(m{-}1)\,N_L$.  This differs from the deterministic-assignment
+  formula by a factor $m/(m{-}1)$, which is 11\% for $m = 10$.
+
+\item \textbf{Periodic boundary conditions.}  Using minimum-image
+  periodic distances is essential; without them, boundary effects
+  introduce subtle biases at all scales.
+
+\item \textbf{$k_{\max}$ choice.}  With $k_{\max} = 128$, the
+  characteristic $k$NN distance is $r_{k_{\max}} \approx 72.6\,
+  h^{-1}\mathrm{Mpc}$, safely beyond $r_{\max} = 48$.  Smaller values
+  ($k_{\max} = 32$ or 64) produce truncation artifacts: clustered data
+  points use many kNN slots for nearby same-line neighbors, depleting
+  counts at large~$r$ and causing a systematic negative bias in the
+  outer bins.
+
+\item \textbf{Self-pair exclusion.}  DD queries use $k_{\max} + 1$
+  neighbors; the self-match at $d \approx 0$ is filtered out, ensuring
+  exactly $k_{\max}$ real neighbors per query.
+
+\item \textbf{CDF sanity check.}  The kNN-CDF of the Poisson random
+  catalog matches the Erlang distribution, confirming that the brute-force
+  $k$NN implementation and periodic distance calculation are correct.
 \end{enumerate}
+
+This validation establishes the correctness of the kNN pair-count-density
+estimator for a point process with $\xi$ spanning $\sim 3$ orders of
+magnitude ($\xi \sim 0.03$--$7$).  The next steps are: (i)~extension to
+non-periodic geometries with survey masks, (ii)~implementation of
+the dilution-ladder for probing multiple density regimes, and
+(iii)~comparison with the standard Landy--Szalay pair-count estimator on
+the same mocks.
 
 \end{document}

@@ -85,6 +85,27 @@ impl LandySzalayKnn {
         KnnDistributions { per_query, k_max }
     }
 
+    /// Run kNN queries with periodic boundary conditions.
+    pub fn query_distances_periodic(
+        &self,
+        data_tree: &PointTree,
+        queries: &[[f64; 3]],
+        box_size: f64,
+    ) -> KnnDistributions {
+        let k_max = self.k_max;
+
+        let per_query: Vec<KnnDistances> = queries
+            .par_iter()
+            .map(|q| {
+                let neighbors = data_tree.nearest_k_periodic(q, k_max, box_size);
+                let distances: Vec<f64> = neighbors.iter().map(|n| n.dist_sq.sqrt()).collect();
+                KnnDistances { distances }
+            })
+            .collect();
+
+        KnnDistributions { per_query, k_max }
+    }
+
     /// Compute the empirical CDF of the k-th nearest neighbor distance.
     ///
     /// CDF_k(r) = fraction of query points whose k-th NN distance ≤ r.

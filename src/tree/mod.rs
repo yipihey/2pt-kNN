@@ -44,7 +44,7 @@ impl PointTree {
         let len = positions.len();
 
         // Tag each point with its original index, then separate
-        let mut tagged: Vec<([f64; 3], usize)> = positions
+        let tagged: Vec<([f64; 3], usize)> = positions
             .into_iter()
             .enumerate()
             .map(|(i, p)| (p, i))
@@ -142,6 +142,42 @@ impl PointTree {
             .collect();
 
         // Partial sort to get k smallest
+        dists.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
+        dists.truncate(k);
+        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        dists
+            .into_iter()
+            .map(|(dist_sq, perm_idx)| Neighbor {
+                dist_sq,
+                index: self.index_map[perm_idx],
+            })
+            .collect()
+    }
+
+    /// Find the k nearest neighbors with periodic boundary conditions.
+    ///
+    /// Distances wrap around a cubic box of side `box_size`.
+    pub fn nearest_k_periodic(&self, query: &[f64; 3], k: usize, box_size: f64) -> Vec<Neighbor> {
+        let k = k.min(self.len);
+        let half = box_size * 0.5;
+        let mut dists: Vec<(f64, usize)> = self
+            .positions
+            .iter()
+            .enumerate()
+            .map(|(perm_idx, pos)| {
+                let mut dist_sq = 0.0;
+                for dim in 0..3 {
+                    let mut d = (pos[dim] - query[dim]).abs();
+                    if d > half {
+                        d = box_size - d;
+                    }
+                    dist_sq += d * d;
+                }
+                (dist_sq, perm_idx)
+            })
+            .collect();
+
         dists.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
         dists.truncate(k);
         dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());

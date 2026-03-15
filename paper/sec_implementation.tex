@@ -1,0 +1,90 @@
+%=============================================================================
+\section{Implementation: Tree Reuse and Spatial Decomposition}
+\label{sec:implementation}
+
+The $k$NN estimator involves two distinct tree-based operations that must be clearly separated.  The \emph{dilution ladder} (Section~\ref{sec:ladder}) requires volume-filling random subsamples, each with its own tree---these cannot be derived from the full tree.  The \emph{spatial decomposition} described in this section uses the structure of the single full-data tree to provide density labels, variance hierarchies, and density-split statistics at no additional cost.  These are complementary: the ladder gives $\xi(r)$ and $\mathrm{Var}[\xihat]$ at all scales; the spatial decomposition gives environmental diagnostics and additional statistical products.
+
+\subsection{In-place KD-trees and the implicit octant hierarchy}
+\label{sec:inplace}
+
+We use the \textsc{bosque} library \citep{bosque}, which builds KD-trees by in-place partitioning: the data array is permuted so that the tree structure is implicit, with round-robin median splits on the $x$, $y$, and $z$ axes.  After the build, the left half of the array contains all points below the $x$-median; within each half, the lower quarter contains points below the $y$-median; within each quarter, the lower eighth contains points below the $z$-median.
+
+After 3 levels of splitting, the array is partitioned into $2^3 = 8$ contiguous blocks that tile the survey volume into (approximate) octants.  After $3\ell$ levels, the array contains $8^\ell$ contiguous blocks.  Each block is a valid KD-tree subtree: its internal ordering satisfies the implicit tree invariant with the same round-robin convention, starting from the $x$-axis (since $3\ell \bmod 3 = 0$).
+
+This structure provides the spatial decomposition used for density diagnostics (Section~\ref{sec:density_diagnostics}) and the nested variance hierarchy (Section~\ref{sec:nested_variance}).  The octant assignment of any point is determined by its position in the sorted array---an $O(1)$ lookup.  Note that this hierarchy is a property of the full-data tree and is separate from the dilution ladder, which requires independent, volume-filling trees at each level.
+
+\subsection{Spatial subsamples vs.\ random subsamples}
+\label{sec:spatial_vs_random}
+
+The octant decomposition produces \emph{spatially disjoint} regions.  These are fundamentally different from the volume-filling random subsamples used in the dilution ladder.
+
+\paragraph{For $\xi(r)$ estimation:} random, volume-filling subsamples are required.  Each diluted subset must span the full survey volume so that pairs at all separations are measurable.  Each subset needs its own tree.  The octant decomposition cannot replace this.
+
+\paragraph{For density diagnostics:} the octant decomposition of the full tree provides environmental labels, density-split statistics, and the nested variance hierarchy at zero additional cost.  These use the global tree with post-stratification by octant, as described below.
+
+\subsection{Boundary-correct post-stratification}
+\label{sec:post_stratification}
+
+For each random query point $q$ in the global DR measurement, we know (from the array index) which octant at each level $\ell$ it belongs to.  The neighbors of $q$ are found from the global tree, correctly including cross-boundary pairs.  We then stratify the results:
+\begin{itemize}[nosep]
+  \item Assign each random to its level-$\ell$ octant $m$.
+  \item Compute the average of $\xihat(r)$ over all randoms in octant $m$, giving the local $\xihat_m^{(\ell)}(r)$.
+  \item The variance of $\xihat_m^{(\ell)}(r)$ across the $8^\ell$ octants gives the nested variance at level $\ell$.
+\end{itemize}
+This procedure is exact---no boundary bias---because the neighbors are found globally.  The octant labels are metadata, not search constraints.
+
+\subsection{Nested variance hierarchy as a Gaussianity test}
+\label{sec:nested_variance}
+
+The nested octant decomposition provides a scale-by-scale decomposition of the total variance of $\xihat(r)$.  At level $\ell$, the between-octant variance captures the contribution from density modes at scales between the level-$\ell$ octant size $L_\ell$ and the level-$(\ell-1)$ octant size $L_{\ell-1} = 2L_\ell$.  The total variance telescopes:
+\begin{equation}
+  \mathrm{Var}_{\mathrm{total}}[\xihat(r)] \;=\; \sum_{\ell=1}^{L} \mathrm{Var}_{\mathrm{between},\ell-1\to\ell}[\xihat(r)] \;+\; \mathrm{Var}_{\mathrm{within},L}[\xihat(r)]\,.
+  \label{eq:nested_variance}
+\end{equation}
+
+For a Gaussian density field, each term is predicted from the power spectrum:
+\begin{equation}
+  \mathrm{Var}_{\mathrm{between},\ell-1\to\ell}^{\mathrm{Gauss}}[\xihat(r)] \;=\; \frac{2}{V_\ell}\int\frac{d^3k}{(2\pi)^3}\,\bigl|W_{\ell-1}(\mathbf{k}) - W_\ell(\mathbf{k})\bigr|^2\,P^2(k)\,,
+  \label{eq:gaussian_variance_band}
+\end{equation}
+where $W_\ell(\mathbf{k})$ is the window function of the level-$\ell$ octant.  The excess at each level,
+\begin{equation}
+  \delta\mathrm{Var}_\ell \;\equiv\; \mathrm{Var}_{\mathrm{between},\ell-1\to\ell}^{\mathrm{measured}} - \mathrm{Var}_{\mathrm{between},\ell-1\to\ell}^{\mathrm{Gauss}}\,,
+  \label{eq:excess_variance_level}
+\end{equation}
+is the non-Gaussian variance contribution from modes in the scale band $[L_\ell, L_{\ell-1}]$.  This provides a scale-resolved non-Gaussianity diagnostic that is independent of the $\Delta_k$ residuals (Section~\ref{sec:nonpoisson}): the $\Delta_k$ measure non-Gaussianity through the counts-in-cells distribution at each smoothing scale, while the nested variance measures non-Gaussianity through the mode-by-mode variance of $\xi(r)$ itself.
+
+At the coarsest accessible level, the trend of $\delta\mathrm{Var}_\ell$ with $\ell$ extrapolates to the super-sample covariance contribution from modes larger than the survey.
+
+\subsection{Statistical products from the spatial decomposition}
+\label{sec:density_diagnostics}
+
+The octant hierarchy assigns each galaxy (and each random query point) a local density at each scale $R_\ell$, simply from the count in the octant:
+\begin{equation}
+  \hat{\delta}_m^{(\ell)} \;=\; \frac{N_m}{\langle N\rangle_\ell} - 1\,.
+  \label{eq:octant_density}
+\end{equation}
+Combined with the kNN query results, this provides:
+
+\paragraph{Nonlinear $\sigma^2(R)$ on spherical tophats.}  For each random query point, the kNN distances give the count $N(<R_0)$ within any chosen radius $R_0$---this is a spherical tophat density estimate.  The variance of $N(<R_0)$ across all randoms gives the full nonlinear density variance:
+\begin{equation}
+  \sigma^2_{\mathrm{NL}}(R_0) \;=\; \frac{\mathrm{Var}[N(<R_0)]}{(\nbar V_0)^2} - \frac{1}{\nbar V_0}\,,
+  \label{eq:sigma_NL}
+\end{equation}
+where the last term subtracts Poisson shot noise.  This is model-free: no Gaussianity assumption, no generating function truncation.  It is the full nonlinear answer, including all higher-order contributions.  This quantity is available as a continuous function of $R_0$, at no cost beyond the kNN query.
+
+The derivative $d\ln\sigma_{\mathrm{NL}}^2/d\ln R$ enters the Press--Schechter mass function and its extensions \citep{Press1974,Sheth2001}.  Because $\sigma_{\mathrm{NL}}^2(R_0)$ is a smooth, densely sampled function of $R_0$, the derivative is well determined.
+
+\paragraph{Density-split clustering.}  The density-split clustering (DSC) technique \citep{Gruen2016,Friedrich2018,Paillas2024} measures $\xi(r)$ separately in subvolumes of different density.  The standard approach selects a single smoothing scale and splits into 3--5 density quantiles.
+
+The kNN framework generalizes DSC in three directions simultaneously:
+
+\emph{(i) Multi-scale.}  The nested octant hierarchy provides the density split at every scale $R_\ell$ simultaneously.  Standard DSC at a single scale is a horizontal slice through the excursion set; the nested hierarchy gives the full two-dimensional structure $(\delta, R)$.
+
+\emph{(ii) Continuous conditioning.}  The spherical-tophat density $\hat\delta(q, R_0)$ from the kNN distances is a continuous variable, not a quantile bin.  The conditional correlation function $\xi(r|\delta, R_0)$ can be studied at arbitrary resolution in $\delta$.
+
+\emph{(iii) Full kNN-CDF statistics per density bin.}  Beyond $\xi(r)$ in each density quantile, the kNN-CDFs per quantile probe all $N$-point functions conditioned on the large-scale density.  The $\Delta_k$ residuals per quantile test whether the non-Poissonian structure depends on environment---a direct probe of environment-dependent halo occupation.
+
+All of these use the global tree query with post-stratification by density label; no additional tree builds or queries are needed.
+
+\paragraph{Excursion set trajectories.}  For each galaxy at position $x$, the nested octant hierarchy gives the smoothed density $\hat\delta^{(\ell)}$ at scales $R_\ell$, for $\ell = 0, 1, \ldots, L$.  The kNN distances from that galaxy's location provide a continuous interpolation of the smoothed density between the discrete octant scales.  The sequence $\hat\delta^{(\ell)}$ as a function of $R_\ell$ is the excursion set trajectory for that point---the same object that the extended Press--Schechter formalism \citep{Bond1991} uses to predict halo masses, but measured directly from the data.

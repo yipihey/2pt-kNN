@@ -1,0 +1,232 @@
+%=============================================================================
+\section{Non-Poissonian Diagnostics and Covariance from kNN Residuals}
+\label{sec:nonpoisson}
+
+The kNN-CDFs contain strictly more information than the two-point correlation function.  In extracting $\xi(r)$ via the DD/DR ratio (Section~\ref{sec:estimator}), we project down to two-point information.  The residual---the departure of the measured kNN-CDFs from the prediction of a Poisson process with the measured $\xi(r)$---encodes the non-Poissonian structure of the point process.  This residual is available at no additional computational cost and is directly related to the non-Gaussian contributions to the covariance matrix that are the most difficult to model analytically.
+
+\subsection{The Poisson$|\xi$ prediction}
+\label{sec:poisson_prediction}
+
+Given the measured $\xihat(r)$ and the known mean density $\nbar$, the Poisson$|\xi$ model is the hypothesis that the points are drawn from an inhomogeneous Poisson process with rate $\lambda(x) = \nbar(1 + \delta(x))$, where $\delta$ has the measured two-point statistics and \emph{all higher connected $N$-point functions vanish}.
+
+Under this hypothesis, the probability generating function for counts in a sphere of volume $V = \frac{4}{3}\pi r_0^3$ is \citep{Banerjee2020}:
+\begin{equation}
+  P^{\mathrm{P}|\xi}(z|V) \;=\; \exp\!\Bigl[\nbar(z-1)V + \tfrac{1}{2}\nbar^2(z-1)^2 V^2 \sigma_V^2\Bigr]\,,
+  \label{eq:genfunc_poisson_xi}
+\end{equation}
+where
+\begin{equation}
+  \sigma_V^2(r_0) \;=\; \frac{1}{V^2}\int_0^{2r_0} dr\,r^2\,\xi(r)\,W(r|r_0)
+  \label{eq:sigmaV_xi}
+\end{equation}
+is the volume-averaged variance, computed from the measured $\xihat(r)$ via the sphere-overlap weight function $W(r|r_0)$ (Eq.~B6 of \citealt{Banerjee2020}).
+
+From Eq.~\eqref{eq:genfunc_poisson_xi}, the Poisson$|\xi$ prediction for the counts-in-cells distribution is:
+\begin{equation}
+  P^{\mathrm{P}|\xi}_{k|V} \;=\; \sum_{m=k}^{\infty} \frac{(-1)^{m-k}}{k!\,(m-k)!}\,\frac{\partial^m}{\partial z^m} P^{\mathrm{P}|\xi}(z|V)\Bigg|_{z=0}\,,
+  \label{eq:Pk_prediction}
+\end{equation}
+and the predicted kNN-CDFs follow from $\cdf^{\mathrm{P}|\xi}_{k\mathrm{NN}}(r_0) = \sum_{j=k}^{\infty} P^{\mathrm{P}|\xi}_{j|V}$.
+
+In practice, the Poisson$|\xi$ prediction is computed numerically for each $k$ and $r_0$ from the measured $\nbar$ and $\sigma_V^2(r_0)$, using the standard recurrence relations for the generating function derivatives.  The cost is negligible.
+
+\subsection{The non-Poissonian residual}
+\label{sec:residual}
+
+Define the residual:
+\begin{equation}
+  \boxed{\Delta_k(r_0) \;\equiv\; \cdf^{\mathrm{measured}}_{k\mathrm{NN}}(r_0) \;-\; \cdf^{\mathrm{P}|\xi}_{k\mathrm{NN}}(r_0)\,.}
+  \label{eq:residual}
+\end{equation}
+If the point process is fully characterized by $\nbar$ and $\xi(r)$ (Gaussian field, Poisson sampling), then $\Delta_k = 0$ for all $k$ and $r_0$.
+
+Non-zero $\Delta_k$ arises from two physically distinct sources that we now quantify.
+
+\subsubsection{Source (i): non-Gaussian density field}
+
+Gravitational evolution generates connected $N$-point functions of the density field at orders $N \geq 3$.  These enter the generating function through the cumulant expansion:
+\begin{equation}
+  \log P(z|V) \;=\; \sum_{n=1}^{\infty} \frac{\nbar^n(z-1)^n}{n!}\,\bar{\xi}^{(n)}_V\,,
+  \label{eq:genfunc_cumulant}
+\end{equation}
+where $\bar{\xi}^{(n)}_V$ is the volume-averaged connected $n$-point function (Eq.~A1 of \citealt{Banerjee2020}).  The Poisson$|\xi$ model truncates this at $n = 2$.  The $n = 3$ term contributes to $\Delta_k$ through the skewness of the density field:
+\begin{equation}
+  \bar{\xi}^{(3)}_V \;=\; \frac{1}{V^3}\int_V\!\!\!\int_V\!\!\!\int_V d^3r_1\,d^3r_2\,d^3r_3\;\zeta(r_{12}, r_{23}, r_{31})\,,
+  \label{eq:xi3_V}
+\end{equation}
+where $\zeta$ is the connected three-point function.  The $n = 4$ term involves the volume-averaged connected four-point function (trispectrum), and so on.
+
+\subsubsection{Source (ii): non-Poisson point process}
+
+Even if the density field were exactly Gaussian, the point process may deviate from Poisson.  The key quantity is the \emph{factorial moment} structure of the point process at fixed density.  For a Poisson process, the conditional factorial moments are:
+\begin{equation}
+  \langle N(N-1)\cdots(N-j+1) | \lambda \rangle_{\mathrm{Poisson}} \;=\; \lambda^j\,,\qquad \lambda = \nbar(1+\delta)\,V\,.
+  \label{eq:poisson_factorial}
+\end{equation}
+Any deviation from this---halo exclusion, satellite multiplicity, fiber collisions---modifies the counts-in-cells distribution and hence the kNN-CDFs.  We parameterize the deviation through the \emph{extra variance} at fixed density:
+\begin{equation}
+  \sigma^2_{N|\lambda} \;\equiv\; \mathrm{Var}[N | \lambda] - \lambda \;=\; (\alpha_{\mathrm{local}} - 1)\,\lambda\,,
+  \label{eq:extra_variance}
+\end{equation}
+where $\alpha_{\mathrm{local}} = \mathrm{Var}[N|\lambda]/\lambda$ is the local Fano factor.  For Poisson, $\alpha_{\mathrm{local}} = 1$.  For a sub-Poisson process (exclusion), $\alpha_{\mathrm{local}} < 1$.  For a super-Poisson process (intra-halo clustering), $\alpha_{\mathrm{local}} > 1$.  Critically, $\alpha_{\mathrm{local}}$ may depend on the local density $\lambda$ and on the sphere radius $r_0$---it is a function, not a number.
+
+\subsection{From $\Delta_k$ to the counts-in-cells excess}
+\label{sec:delta_to_cic}
+
+The non-Poissonian residual in the counts-in-cells distribution follows directly from $\Delta_k$:
+\begin{equation}
+  \delta P_{k|V} \;\equiv\; P^{\mathrm{measured}}_{k|V} - P^{\mathrm{P}|\xi}_{k|V} \;=\; \Delta_k(r_0) - \Delta_{k+1}(r_0)\,,
+  \label{eq:delta_Pk}
+\end{equation}
+using $P_{k|V} = \cdf_{k\mathrm{NN}}(r_0) - \cdf_{(k+1)\mathrm{NN}}(r_0)$.  The $\delta P_{k|V}$ are a redistribution: they sum to zero ($\sum_k \delta P_{k|V} = 0$, since both the measured and predicted distributions are normalized).  Their structure reveals the character of the non-Poissonian signal:
+\begin{itemize}[nosep]
+  \item If $\delta P_0 > 0$ and $\delta P_{k>0} < 0$ for low $k$: more empty spheres than Poisson$|\xi$ predicts---consistent with enhanced void regions from non-Gaussian tails.
+  \item If $\delta P_0 < 0$ and $\delta P_{1} > 0$: fewer empty spheres, more singly-occupied ones---consistent with halo exclusion (anti-clustering below the halo scale).
+  \item If $\delta P_{k \gg 1} > 0$: excess of high-multiplicity spheres---consistent with satellite galaxies in massive halos (super-Poisson intra-halo occupation).
+\end{itemize}
+
+\subsection{Connection to the factorial cumulants}
+\label{sec:factorial_cumulants}
+
+The factorial cumulants $C_j(V)$ of the counts-in-cells distribution are the central objects in the theory of clustering covariances \citep{Szapudi1998}:
+\begin{equation}
+  C_j(V) \;\equiv\; \nbar^j\,\bar{\xi}^{(j)}_V + \text{lower-order shot-noise terms}\,.
+  \label{eq:factorial_cumulant}
+\end{equation}
+The first three are:
+\begin{align}
+  C_1(V) &= \nbar V\,,\label{eq:C1}\\
+  C_2(V) &= \nbar V + \nbar^2 V^2 \sigma_V^2\,,\label{eq:C2}\\
+  C_3(V) &= \nbar V + 3\nbar^2 V^2 \sigma_V^2 + \nbar^3 V^3 \bar{\xi}^{(3)}_V\,.\label{eq:C3}
+\end{align}
+The Poisson$|\xi$ model predicts $C_1$ and $C_2$ exactly (by construction), but predicts $C_3 = \nbar V + 3\nbar^2 V^2 \sigma_V^2$ (i.e.\ with $\bar{\xi}^{(3)}_V = 0$).  The measured excess is:
+\begin{equation}
+  \delta C_3(V) \;=\; C_3^{\mathrm{measured}} - C_3^{\mathrm{P}|\xi} \;=\; \nbar^3 V^3\,\bar{\xi}^{(3)}_V + \delta C_3^{\mathrm{non\text{-}Poisson}}\,,
+  \label{eq:delta_C3}
+\end{equation}
+where $\delta C_3^{\mathrm{non\text{-}Poisson}}$ captures any non-Poissonian contribution to the third factorial cumulant.
+
+The kNN residuals $\Delta_k$ provide a direct measurement of the factorial moments without binning.  We derive this connection explicitly.
+
+The $k$NN-CDF is the probability that a sphere contains at least $k$ points: $\cdf_{k\mathrm{NN}}(r_0) = P_{>k-1|V} = \sum_{j=k}^{\infty} P_{j|V}$.  The falling factorial moments $\langle N^{(j)} \rangle \equiv \langle N(N-1)\cdots(N-j+1)\rangle$ are related to the kNN-CDFs by the identity
+\begin{equation}
+  \langle N^{(j)} \rangle \;=\; j!\sum_{k=j}^{\infty} \binom{k}{j}^{-1}\!\cdot\! \binom{k}{j} P_{k|V} \;=\; j!\sum_{k=j}^{\infty} P_{k|V} \;\cdot\; \frac{1}{1}\,,
+\end{equation}
+which simplifies to (see Appendix~B of \citealt{Banerjee2020})
+\begin{equation}
+  \sum_{k=1}^{\infty} \cdf_{k\mathrm{NN}} = \langle N \rangle\,,\qquad \sum_{k=1}^{\infty} (k-1)\,\cdf_{k\mathrm{NN}} = \frac{\langle N^{(2)}\rangle}{2}\,,
+  \label{eq:cdf_moment_identity}
+\end{equation}
+and more generally $\sum_{k=1}^{\infty}\binom{k-1}{j-1}\cdf_{k\mathrm{NN}} = \langle N^{(j)}\rangle / j!$.
+
+The non-Poissonian excess in the second factorial moment is therefore
+\begin{equation}
+  \delta\!\langle N^{(2)}\rangle \;=\; 2\sum_{k=1}^{\infty} (k-1)\,\Delta_k(r_0) \;=\; 2\sum_{k=2}^{\infty} (k-1)\,\Delta_k(r_0)\,,
+  \label{eq:dN2_from_delta}
+\end{equation}
+since $\Delta_1$ contributes with coefficient $(1-1)=0$.  Note that this is not simply $2\sum_{k\geq 2}\Delta_k$: each $\Delta_k$ enters with weight $(k-1)$, giving higher-$k$ residuals proportionally more influence.  This weighting is physically correct---the second factorial moment involves pairs, and the $k$-th NN CDF counts spheres with $\geq k$ points, each contributing $\binom{k}{2}$ pairs.
+
+For the third factorial moment:
+\begin{equation}
+  \delta\!\langle N^{(3)}\rangle \;=\; 6\sum_{k=3}^{\infty} \binom{k-1}{2}\,\Delta_k(r_0) \;=\; 3\sum_{k=3}^{\infty}(k-1)(k-2)\,\Delta_k(r_0)\,.
+  \label{eq:dN3_from_delta}
+\end{equation}
+The $k$-dependent weights $\binom{k-1}{j-1}$ ensure that the $j$-th factorial moment is most sensitive to the residuals at high $k$, where the counts-in-cells distribution is probing the tail---exactly where non-Poissonian effects (satellite multiplicity, non-Gaussian tails) produce the largest departures.
+
+From the factorial moments, the excess variance of counts in cells follows:
+\begin{equation}
+  \delta\sigma^2_N(V) \;=\; \delta\!\langle N^{(2)}\rangle + \delta\!\langle N\rangle - \delta\!\langle N\rangle^2 \;=\; \delta\!\langle N^{(2)}\rangle\,,
+  \label{eq:var_from_factorial}
+\end{equation}
+since $\delta\!\langle N\rangle = 0$ by construction (the Poisson$|\xi$ model matches the measured mean density).  Thus the excess variance is given by Eq.~\eqref{eq:dN2_from_delta}, and the connection to the kNN residuals is exact---no approximations beyond the truncation at $k_{\max}$.
+
+\subsection{The excess variance and its connection to $\alpha_{\mathrm{SN}}$}
+\label{sec:excess_variance}
+
+The total variance of counts in cells is:
+\begin{equation}
+  \sigma_N^2(V) \;=\; \nbar V + \nbar^2 V^2 \sigma_V^2 + \delta\sigma^2_N(V)\,,
+  \label{eq:total_variance}
+\end{equation}
+where the first two terms are the Poisson$|\xi$ prediction and $\delta\sigma^2_N(V)$ is the non-Poissonian excess.  From Eq.~\eqref{eq:dN2_from_delta} and~\eqref{eq:var_from_factorial}, the excess is directly measured from the residuals:
+\begin{equation}
+  \delta\sigma^2_N(V) \;=\; 2\sum_{k=2}^{\infty} (k-1)\,\Delta_k(r_0)\,.
+  \label{eq:excess_var_from_delta}
+\end{equation}
+The RascalC shot-noise rescaling parameter \citep{Philcox2020,Rashkovetskyi2024} is defined as:
+\begin{equation}
+  \alpha_{\mathrm{SN}} \;=\; 1 + \frac{\delta\sigma^2_{N,\mathrm{SN}}}{\nbar V}\,,
+  \label{eq:alpha_SN_def}
+\end{equation}
+where $\delta\sigma^2_{N,\mathrm{SN}}$ is the shot-noise part of the excess variance.  In the RascalC approach, a single $\alpha_{\mathrm{SN}}$ is fit to minimize the KL divergence between the semi-analytical and jackknife covariance matrices \citep{Rashkovetskyi2024}.
+
+The kNN residuals provide a \emph{scale-dependent generalization}:
+\begin{equation}
+  \boxed{\alpha_{\mathrm{SN}}(V) \;=\; 1 + \frac{\delta\sigma^2_N(V)}{\nbar V}\,,}
+  \label{eq:alpha_scale_dependent}
+\end{equation}
+measured directly from $\Delta_k$ at each volume $V$.  This function captures the full scale dependence of the non-Poissonian excess, replacing the single-parameter fit with a direct measurement.
+
+\paragraph{Order of magnitude.}  For DESI-like LRG samples with $\nbar \approx 3 \times 10^{-4}\,h^3\,\mathrm{Mpc}^{-3}$, a sphere of radius $r_0 = 10\,h^{-1}\,\mathrm{Mpc}$ contains $\nbar V \approx 1.3$ galaxies on average.  At this scale, $\sigma_V^2 \approx 1$, so the Poisson$|\xi$ variance is $\sigma^2_{N,\mathrm{P}|\xi} \approx 1.3 + 1.7 \approx 3$.  The non-Poissonian correction from the trispectrum and non-Poisson point statistics is $\sim 10$--$30\%$ of this \citep{Rashkovetskyi2024}, so $\delta\sigma^2_N \sim 0.3$--$0.9$ and $\alpha_{\mathrm{SN}} \sim 1.2$--$1.7$.  This produces $\Delta_k(r_0) \sim 0.01$--$0.03$ for the first few $k$ values, well above the statistical noise for $N_R \sim 10^6$ random query points (for which the CDF noise is $\sim 1/\sqrt{N_R} \sim 10^{-3}$).  The signal-to-noise ratio for detecting non-Poissonian structure is therefore $\gtrsim 10$ per radial bin---a high-significance measurement from the same data that gave $\xi(r)$.
+
+\subsection{Separation of density non-Gaussianity from point-process effects}
+\label{sec:separation}
+
+The excess $\delta\sigma^2_N(V)$ combines two contributions: (i) non-Gaussianity of the density field ($\bar{\xi}^{(n)}_V$ for $n \geq 3$), and (ii) non-Poissonian point statistics.  These can be partially separated using the $k$-dependence and scale dependence of $\Delta_k$.
+
+For a halo-model galaxy population, the separation is clean at the scales of interest.  At $r_0 \gg R_{\mathrm{vir}}$ (the scales relevant for BAO and full-shape analysis), the intra-halo contribution (non-Poisson) is negligible and $\delta\sigma^2_N$ is dominated by the density trispectrum (non-Gaussian).  At $r_0 \lesssim R_{\mathrm{vir}}$, the intra-halo satellite distribution dominates, and $\Delta_k$ at low $k$ is controlled by the halo occupation distribution (HOD).
+
+The separation can be sharpened by comparing the measured $\Delta_k$ to the prediction from the hierarchical ansatz $\bar{\xi}^{(n)}_V = S_n\,(\sigma_V^2)^{n-1}$, where $S_n$ are the hierarchical amplitudes.  For the gravitational evolution of an initially Gaussian field, perturbation theory predicts $S_3 \approx 34/7 + \gamma_1$ (where $\gamma_1$ is the logarithmic slope of the correlation function), giving a definite prediction for $\delta C_3(V)$.  Any residual beyond this is point-process non-Poissonianity, and its scale dependence reveals whether it originates from halo exclusion (deficit at $r_0 \sim 1$--$5\,h^{-1}\,\mathrm{Mpc}$), satellite occupation (excess at $r_0 \sim 0.1$--$1\,h^{-1}\,\mathrm{Mpc}$), or other effects.
+
+\subsection{Explicit recipe for improved covariance estimation}
+\label{sec:cov_recipe}
+
+The covariance of the two-point correlation function estimator at separations $r_1$ and $r_2$ decomposes as \citep{Philcox2020}:
+\begin{equation}
+  \mathrm{Cov}[\xihat(r_1), \xihat(r_2)] \;=\; C^{\mathrm{G}} + C^{\mathrm{NG}} + C^{\mathrm{SSC}} + C^{\mathrm{SN,\,non\text{-}P}}\,,
+  \label{eq:cov_decomp}
+\end{equation}
+where $C^{\mathrm{G}}$ is the Gaussian term (computed by RascalC from $\xi$ and the survey geometry), $C^{\mathrm{NG}}$ is the connected trispectrum term, $C^{\mathrm{SSC}}$ is the super-sample covariance, and $C^{\mathrm{SN,\,non\text{-}P}}$ is the non-Poissonian shot noise.
+
+RascalC approximates $C^{\mathrm{NG}} + C^{\mathrm{SN,\,non\text{-}P}}$ by rescaling the shot-noise integrals with a single $\alpha_{\mathrm{SN}}$---an approximation justified in the squeezed trispectrum limit \citep{Philcox2020} and validated at the $\lesssim 8\%$ level for BAO error bars \citep{Rashkovetskyi2024}.
+
+The kNN residuals replace this single-parameter approximation with a direct, scale-dependent measurement.  The explicit procedure is:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Measure $\xi(r)$} from the DD/DR $k$NN ratio (Section~\ref{sec:estimator}).
+  \item \textbf{Compute $\sigma_V^2(r_0)$} from $\xihat(r)$ using Eq.~\eqref{eq:sigmaV_xi}.
+  \item \textbf{Predict $\cdf^{\mathrm{P}|\xi}_{k\mathrm{NN}}(r_0)$} from $\nbar$ and $\sigma_V^2$ using the generating function (Eq.~\ref{eq:genfunc_poisson_xi}).
+  \item \textbf{Compute $\Delta_k(r_0)$} for $k = 1, \ldots, k_{\max}$.
+  \item \textbf{Compute $\delta\sigma^2_N(V)$} from Eq.~\eqref{eq:excess_var_from_delta} and $\alpha_{\mathrm{SN}}(V)$ from Eq.~\eqref{eq:alpha_scale_dependent}.
+  \item \textbf{Feed $\alpha_{\mathrm{SN}}(V)$} into RascalC, replacing the constant $\alpha_{\mathrm{SN}}$ in the covariance integrals (Eq.~2.6 of \citealt{Rashkovetskyi2024}) with the measured function, evaluated at the scale corresponding to each quadruple's geometry.
+\end{enumerate}
+
+Steps 2--5 are analytic or involve trivial numerical operations.  Step 6 requires only interpolation of a tabulated function---the computational cost of RascalC is unchanged.  This procedure preserves the full RascalC framework (survey geometry, Legendre-binned multipoles, multi-tracer extensions) while replacing its least constrained ingredient---the single-parameter non-Gaussian correction---with a data-driven, scale-dependent measurement.
+
+\subsection{Super-sample covariance from dilution subsamples}
+\label{sec:ssc}
+
+The super-sample covariance (SSC) arises from density modes on scales larger than the survey volume, which shift the local mean density and cause $\xi(r)$ to fluctuate coherently \citep{Barreira2018}.  No internal estimator can fully capture modes larger than the survey, but the dilution ladder provides a partial handle.
+
+At dilution level $R_\ell$, the $M_\ell$ subsamples see different large-scale environments within the survey.  Their scatter:
+\begin{equation}
+  \widehat{\mathrm{Var}}_\ell[\xihat(r)] \;=\; \frac{1}{M_\ell - 1}\sum_{m=1}^{M_\ell} \bigl(\xihat_m(r) - \bar{\xi}_\ell(r)\bigr)^2
+  \label{eq:subsample_var}
+\end{equation}
+includes shot noise, Gaussian variance, non-Gaussian variance, and SSC from modes within the survey but larger than the subsample separation.  Comparing $\widehat{\mathrm{Var}}_\ell$ across dilution levels reveals where the variance stops scaling as $1/M_\ell$---the scale at which super-sample modes dominate.  The difference between adjacent levels isolates the SSC contribution from modes between the two dilution scales.
+
+\subsection{Diagnostics for observational systematics}
+\label{sec:systematics}
+
+Non-Poissonian residuals can also arise from observational effects, each with a characteristic signature in $\Delta_k(r_0)$:
+
+\paragraph{Fiber collisions.}  In fiber-fed spectrographs, two fibers cannot target galaxies closer than $\sim 62''$ (DESI).  This removes close pairs, producing $\Delta_1(r_0) < 0$ at $r_0 \lesssim r_{\mathrm{fiber}}$.  The scale and amplitude of this deficit are predicted from the instrument design, providing a consistency check against the applied correction.
+
+\paragraph{Redshift failures and imaging systematics.}  Density-dependent incompleteness shifts $\Delta_k$ at small $r_0$; angular systematics (stellar density, extinction) produce signatures at large $r_0$.  Computing $\Delta_k$ in subregions of different observing quality provides targeted tests.
+
+In all cases, the kNN residuals probe the full counts-in-cells distribution, not just the mean pair count.  A systematic that preserves the mean pair density but modifies the variance (e.g.\ stochastic fiber assignment) is invisible in $\xi(r)$ but detectable in $\Delta_k$.
+
+\subsection{Gaussianity test from higher-$k$ CDFs}
+\label{sec:gaussianity}
+
+For a Gaussian density field with Poisson sampling, all kNN-CDFs are determined by $\nbar$ and $\sigma_V^2$ via Eq.~\eqref{eq:genfunc_poisson_xi}.  Testing the measured $k = 3, 4, 8$ CDFs against this prediction provides a hierarchy of Gaussianity tests at increasing statistical order---from the same tree query that produced $\xi(r)$.  These tests are particularly valuable at the quasi-linear scales ($r_0 \sim 20$--$60\,h^{-1}\,\mathrm{Mpc}$) where the Gaussian approximation to the covariance is least well validated.

@@ -1,0 +1,86 @@
+%=============================================================================
+\section{Error Budget}
+\label{sec:errors}
+
+We analyze the statistical errors of the $k$NN estimator and compare to the standard pair-counting approach.
+
+\subsection{Sources of error}
+\label{sec:error_sources}
+
+The error on $\xihat(r)$ has three contributions:
+\begin{enumerate}[nosep]
+  \item \textbf{Shot noise} (Poisson error): the finite number of pairs at separation $r$ contributing to the measurement.
+  \item \textbf{Cosmic (sample) variance}: the finite number of independent large-scale modes in the survey volume.
+  \item \textbf{Estimator noise}: statistical fluctuations in the DR and RR reference terms due to finite random catalogs.
+\end{enumerate}
+The first two are irreducible---they are set by the data and the survey volume.  The third can be made arbitrarily small by increasing $N_R$.
+
+\subsection{The DR term: independent query points}
+\label{sec:dr_error}
+
+In the $k$NN framework, the DR term is measured from $N_R$ independent random query points.  Each random contributes an independent estimate of the DR pair-count density at every $r$ (via its nearest-neighbor distances).  The variance of the DR CDF at any point is therefore
+\begin{equation}
+  \mathrm{Var}[\cdf^{\dr}_k(r)] \;=\; \frac{\cdf^{\dr}_k(r)\,(1 - \cdf^{\dr}_k(r))}{N_R}\,,
+  \label{eq:var_DR}
+\end{equation}
+which is the binomial variance of the empirical CDF.  This decreases as $1/N_R$ with no saturation---every additional random point provides an independent measurement.
+
+In standard pair counting, the DR variance also scales as $1/N_R$, but the proportionality constant depends on the pair-counting geometry (shell volume, edge corrections).  The $k$NN approach has the same scaling but with a different prefactor that depends on the CDF value.  The variance is smallest when $\cdf^{\dr}_k(r) \approx 0.5$ (the peak of the CDF), which is the scale where the $k$-th neighbor distance is most frequently measured.
+
+\subsection{The DD term: correlated query points}
+\label{sec:dd_error}
+
+In the DD case, the query points are the data points themselves, which are clustered.  Two data points that are close together see nearly the same local environment, so their nearest-neighbor distances are correlated.  The effective number of independent DD measurements is not $N_d$ but
+\begin{equation}
+  N_{\rm eff}^{\dd}(r) \;\sim\; \frac{V_{\rm survey}}{V_{\rm corr}(r)}\,,
+  \label{eq:N_eff_DD}
+\end{equation}
+where $V_{\rm corr}(r) \sim r^3$ is the correlation volume at scale $r$.  At small $r$, $N_{\rm eff}^{\dd}$ is large (many independent regions) and the DD error is small.  At large $r$, $N_{\rm eff}^{\dd}$ shrinks and cosmic variance dominates.
+
+This is exactly the same limitation that affects standard pair counting: the variance of $\dd(r)$ at large $r$ is dominated by cosmic variance, not shot noise, and adding more pairs from the same volume does not help.  The $k$NN approach and the standard approach have the same cosmic variance floor.
+
+\subsection{Optimal $k$ for a given scale}
+\label{sec:optimal_k}
+
+As discussed in Section~\ref{sec:ladder}, the $k$NN CDF peaks at a characteristic scale $r_{\rm char}(k) \sim (k/\nbar)^{1/3}$.  At this scale, the CDF is near 0.5 and the binomial variance (Eq.~\ref{eq:var_DR}) is maximized relative to the CDF value---paradoxically, this is where the \emph{fractional} error on the CDF is smallest, because the denominator is $\cdf(1-\cdf)$.
+
+More importantly, the PDF is largest at the peak: $\pdf_k(r)$ is maximized near $r_{\rm char}(k)$.  Since the pair-count density is proportional to the PDF, the signal-to-noise for $\xi(r)$ is maximized when $r \approx r_{\rm char}(k)$.
+
+For the Poisson case ($\xi = 0$), the optimal $k$ for measuring a small departure $\xi(r_0)$ at scale $r_0$ is
+\begin{equation}
+  k_{\rm opt}(r_0) \;\approx\; \frac{4}{3}\pi\,\nbar_{\rm eff}\,r_0^3\,,
+  \label{eq:k_opt}
+\end{equation}
+i.e.\ the expected number of points in a sphere of radius $r_0$.  At this $k$, the $k$NN CDF peaks near $r_0$, and the measurement has maximum statistical weight.
+
+\subsection{When does the $k$NN approach win?}
+\label{sec:when_wins}
+
+The $k$NN approach provides the same information as pair counting---the pair-count density at each separation---but accesses it through a different computational path.  The advantages are:
+\begin{itemize}[nosep]
+  \item \textbf{Computational cost}: $O(N_R \log N_d)$ for DR instead of $O(N_R \cdot N_{\rm shell})$.  The savings are largest at large separations where $N_{\rm shell}$ is large and tree pruning in standard pair counting is least effective.
+  \item \textbf{No binning}: the CDFs are continuous; no choice of bin width or bin centers is needed.  This avoids the bias from wide bins and the noise from narrow bins.
+  \item \textbf{Built-in variance}: the dilution ladder provides empirical variance estimates at every scale, complementing (not replacing) mock-based covariance estimation.
+  \item \textbf{Reduced RR cost}: for uniform periodic boxes, the RR term is analytic (Erlang).  For weighted surveys, the RR kNN query costs $O(N_R \log N_R)$ rather than $O(N_R^2)$.
+  \item \textbf{Free diagnostics}: the non-Poissonian residuals $\Delta_k$, the nonlinear $\sigma^2(R)$, and density-split statistics are byproducts of the same tree queries (Section~\ref{sec:nonpoisson}).
+\end{itemize}
+
+The $k$NN approach does \emph{not} reduce the cosmic variance floor or the Poisson shot noise---these are properties of the data, not the estimator.  It provides the same information as pair counting, faster.
+
+\subsection{Where the $k$NN approach requires care}
+\label{sec:care}
+
+\paragraph{Finite $k_{\max}$.}  The summed estimator (Eq.~\ref{eq:xi_estimator}) requires $k_{\max}$ large enough that $\cdf_{k_{\max}}(r) \approx 1$ at the scale of interest.  If $k_{\max}$ is too small, the pair count is underestimated and $\xihat(r)$ is biased low.  The dilution ladder addresses this by ensuring that at every scale, there is a dilution level where $k_{\max} = 8$ suffices.
+
+\paragraph{Differentiating the CDF.}  The pair-count density $\mathcal{D}(r) = d\langle N\rangle / dr$ requires differentiation of the empirical CDF, which is noisy.  In practice, the CDF is smoothed (e.g.\ by kernel regression or spline fitting) before differentiation.  The choice of smoothing bandwidth introduces a trade-off between bias and variance, analogous to the choice of bin width in standard pair counting.  However, the smoothing is applied to the CDF (a monotone function), which is better conditioned than smoothing a noisy histogram.
+
+\paragraph{Large-scale correlations between DD queries.}  At large separations, the DD measurements are highly correlated because each data point's local environment overlaps with nearby data points' environments.  The effective number of independent measurements is set by the number of independent large-scale modes, not by $N_d$.  The subsample variance from the dilution ladder correctly captures this correlation, but using the full undiluted sample at large $r$ would overstate the precision.  The ladder naturally avoids this by using diluted subsamples at large scales, where the subsample points are well separated and their measurements are more nearly independent.
+
+\subsection{Covariance of the $\xi(r)$ measurement}
+\label{sec:xi_covariance}
+
+An important subtlety: the $k$NN estimator gives the same $\xi(r)$ as LS, therefore the covariance of the measurement is also the same.  The standard covariance decomposition (Gaussian + non-Gaussian + super-sample + non-Poisson shot noise) applies regardless of how $\xi(r)$ was computed.  Any covariance matrix computed for the LS estimator---whether from mocks, the RascalC semi-analytical approach, or analytic models---is directly applicable to the $k$NN measurement of $\xi(r)$ at the same separations.
+
+This means the $k$NN approach can be adopted without any change to the downstream inference pipeline: the same covariance matrix, the same likelihood, the same parameter estimation code.  The only change is that $\xi(r)$ is computed faster.
+
+However, as we show in Section~\ref{sec:nonpoisson}, the $k$NN framework goes further: the residuals $\Delta_k(r_0)$ between the measured kNN-CDFs and the Poisson$|\xi$ prediction provide a direct, scale-dependent measurement of the non-Gaussian and non-Poissonian contributions that are the hardest to model analytically.  These residuals can be used to improve the covariance estimate itself, by replacing the single-parameter shot-noise rescaling in RascalC with a measured, scale-dependent function (Section~\ref{sec:excess_variance}).

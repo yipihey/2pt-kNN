@@ -1,0 +1,82 @@
+%=============================================================================
+\section{The Dilution Ladder}
+\label{sec:ladder}
+
+The $k$NN estimator with $k_{\max}$ neighbors reaches scales up to the $k_{\max}$-th nearest-neighbor distance, which for the undiluted sample is a few times the mean inter-particle separation $\bar{d} = \nbar^{-1/3}$.  To extend the measurement to larger scales---where the correlation function is weak but cosmologically important (BAO, large-scale bias, etc.)---we use a geometric ladder of diluted subsamples.
+
+\subsection{Construction}
+\label{sec:ladder_construction}
+
+Starting from the full data catalog of $N_d$ points, we partition them into a sequence of volume-filling subsamples.  At each dilution level $\ell$, the data are randomly divided (without replacement) into $R_\ell$ disjoint subsets, each containing $N_d / R_\ell$ points distributed throughout the full survey volume:
+\begin{equation}
+  R_0 = 1,\quad R_1 = 8,\quad R_2 = 64,\quad R_3 = 512,\quad \ldots\quad R_\ell = 8^\ell\,.
+  \label{eq:dilution_levels}
+\end{equation}
+The dilution factor of 8 is chosen so that the mean inter-particle separation increases by a factor of $8^{1/3} = 2$ at each level.  Each subset requires its own tree, built on its $N_d/R_\ell$ points.  Because each subset spans the full survey volume, it can measure $\xi(r)$ at all separations up to the survey scale---the dilution increases the mean separation, bringing larger scales within reach of small $k$.
+
+The $k$-th nearest neighbor at dilution $R_\ell$ probes a characteristic scale
+\begin{equation}
+  r_{\rm char}(k, R_\ell) \;\sim\; \Bigl(\frac{k\,R_\ell}{\nbar}\Bigr)^{1/3}\,.
+  \label{eq:r_char}
+\end{equation}
+
+With $k = 1, \ldots, 8$ at each dilution level, the range of probed scales is:
+\begin{equation}
+  r_{\rm char}(1, R_\ell) \;\sim\; R_\ell^{1/3}\,\bar{d}\,,\quad r_{\rm char}(8, R_\ell) \;\sim\; 2\,R_\ell^{1/3}\,\bar{d}\,.
+  \label{eq:scale_range}
+\end{equation}
+Each rung covers a factor of 2 in scale.  The factor-of-8 dilution between levels ensures that the $k = 1$ scale at level $\ell + 1$ matches the $k = 8$ scale at level $\ell$:
+\begin{equation}
+  r_{\rm char}(1, R_{\ell+1}) = r_{\rm char}(1, 8 R_\ell) = 2\,R_\ell^{1/3}\,\bar{d} = r_{\rm char}(8, R_\ell)\,.
+  \label{eq:overlap}
+\end{equation}
+This produces complete overlap between adjacent rungs.
+
+\subsection{Overlap as a consistency check}
+\label{sec:overlap}
+
+In the overlap region, two independent measurements of $\xi(r)$ are available:
+\begin{itemize}[nosep]
+  \item From level $\ell$, using $k = 8$: the 8th nearest neighbor in a sample of $N_d / R_\ell$ points.
+  \item From level $\ell + 1$, using $k = 1$: the 1st nearest neighbor in a sample of $N_d / R_{\ell+1} = N_d / (8 R_\ell)$ points.
+\end{itemize}
+These two measurements use different subsets of the data, with different neighbor ranks and different survival corrections.  Agreement between them confirms that:
+\begin{enumerate}[nosep]
+  \item The $k_{\max} = 8$ truncation is adequate at level $\ell$ (no missing pairs).
+  \item The survival correction (Section~\ref{sec:k1}) is handled correctly.
+  \item The dilution procedure does not introduce biases (e.g.\ from edge effects or the interaction between dilution and the survey geometry).
+\end{enumerate}
+Disagreement in the overlap region is a red flag that triggers investigation before the measurement is trusted at larger scales.
+
+\subsection{Variance estimation from the partition}
+\label{sec:variance}
+
+At each dilution level $R_\ell$, the $R_\ell$ disjoint subsamples are independent (no shared data points).  For each subsample $m$, the $k$NN estimator yields $\xihat_m(r)$.  The scatter across subsamples provides an empirical estimate of the variance:
+\begin{equation}
+  \widehat{\mathrm{Var}}[\xihat(r)] \;=\; \frac{1}{R_\ell - 1}\sum_{m=1}^{R_\ell} \bigl(\xihat_m(r) - \bar{\xi}(r)\bigr)^2\,,
+  \label{eq:var_estimate}
+\end{equation}
+where $\bar{\xi}(r)$ is the mean over subsamples.  This is a direct, model-free estimate of the measurement variance, incorporating both Poisson noise and cosmic variance.
+
+The degrees of freedom at each level are naturally well matched to the measurement.  At the lowest dilution (level 0, full data), $k = 1, \ldots, 8$ probes only small separations $r \lesssim 2\bar{d}$, where the number of independent spatial volumes in the survey is $V_{\rm survey}/r^3 \gg 1$.  No variance estimate from multiple subsamples is needed at this level---the measurement itself has negligible sample variance.  At the highest dilution (level $L$, $R_L$ subsamples), $k = 1, \ldots, 8$ probes scales $r \sim 2^L \bar{d}$, where cosmic variance is important---but there are $R_L$ independent measurements with $R_L - 1$ degrees of freedom.  The scale--dilution matching ensures that the variance estimate is well determined everywhere without special treatment.
+
+\subsection{The full ladder}
+\label{sec:full_ladder}
+
+The complete measurement procedure is:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Level 0} ($R_0 = 1$): use the full data catalog.  Measure DD and DR $k$NN-CDFs for $k = 1, \ldots, 8$.  Compute $\xihat(r)$ via Eq.~\eqref{eq:xi_estimator} from the mean separation $\bar{d}$ to $\sim 2\bar{d}$.  No variance estimate at this level (only one realization).
+  \item \textbf{Level 1} ($R_1 = 8$): draw $M_1 \sim 8$ subsamples of $N_d / 8$ points.  For each, measure DD and DR $k$NN-CDFs for $k = 1, \ldots, 8$.  Compute $\xihat_m(r)$ for each subsample, covering $\sim 2\bar{d}$ to $\sim 4\bar{d}$.  Check overlap with Level 0 at $r \sim 2\bar{d}$.  Estimate variance from scatter across subsamples.
+  \item \textbf{Level $\ell$} ($R_\ell = 8^\ell$): draw $M_\ell$ subsamples of $N_d / R_\ell$ points.  Measure, overlap-check, estimate variance.  Covers $\sim 2^\ell \bar{d}$ to $\sim 2^{\ell+1}\bar{d}$.
+  \item Continue until the desired maximum scale is reached.
+\end{enumerate}
+
+For a survey with $N_d = 10^7$ and mean separation $\bar{d} \approx 5\,h^{-1}\mathrm{Mpc}$, four dilution levels reach $\sim 80\,h^{-1}\mathrm{Mpc}$, well past the BAO scale.  Five levels reach $\sim 160\,h^{-1}\mathrm{Mpc}$.
+
+\subsection{Combining across levels}
+\label{sec:combining}
+
+The final $\xihat(r)$ is assembled from the ladder by selecting, at each $r$, the measurement from the level and $k$ value whose characteristic scale is closest to $r$ and whose CDF is near 0.5 (optimal sampling; Section~\ref{sec:errors}).  In the overlap regions, a weighted average of the two adjacent levels is used, with weights inversely proportional to the estimated variance.
+
+The resulting $\xihat(r)$ is a continuous function of $r$, spanning from the smallest inter-particle scale to the largest scale accessible by the survey geometry, with an empirical error bar at every point.

@@ -1,0 +1,113 @@
+%=============================================================================
+\section{The $k$NN Estimator for $\xi(r)$}
+\label{sec:estimator}
+
+We now construct an explicit estimator for $\xi(r)$ from the measured $k$NN-CDFs, and demonstrate its equivalence to the Landy--Szalay estimator.
+
+\subsection{From CDFs to pair counts}
+\label{sec:cdf_to_pairs}
+
+The pair count in a thin shell $(r, r + dr)$ is, by definition, the number of neighbors at distance $r$ averaged over all query points.  This is precisely the PDF of nearest-neighbor distances times the number of query points---but summed over \emph{all} neighbors, not just the $k$-th.
+
+To recover the total pair count from $k$NN-CDFs, we use the counts-in-cell decomposition \citep{Banerjee2020}.  The probability that a sphere of radius $r$ centered on a query point contains exactly $k$ target points is
+\begin{equation}
+  P_{k|r}^{QT} \;=\; \cdf^{QT}_k(r) - \cdf^{QT}_{k+1}(r)\,,\quad k \geq 1\,,
+  \label{eq:Pk_from_CDF}
+\end{equation}
+with $P_{0|r}^{QT} = 1 - \cdf^{QT}_1(r)$.  The mean number of targets within radius $r$ is then
+\begin{equation}
+  \langle N \rangle^{QT}(r) \;=\; \sum_{k=1}^{\infty} k\,P_{k|r}^{QT} \;=\; \sum_{k=1}^{\infty} \cdf^{QT}_k(r)\,.
+  \label{eq:mean_count}
+\end{equation}
+The pair count in a shell $(r, r+dr)$ is the derivative:
+\begin{equation}
+  \frac{d\langle N\rangle^{QT}}{dr}(r) \;=\; \sum_{k=1}^{\infty} \pdf^{QT}_k(r)\,.
+  \label{eq:pair_count_from_pdf}
+\end{equation}
+In practice, the sum is truncated at $k_{\max}$---the maximum number of neighbors queried.  On scales where $\cdf^{QT}_{k_{\max}}(r) \approx 1$ (i.e.\ almost all query points have found $k_{\max}$ neighbors within $r$), the truncation error is negligible.  On scales where $\cdf^{QT}_{k_{\max}}(r) < 1$, the sum underestimates the true pair count because some query points have more than $k_{\max}$ neighbors.  The dilution ladder (Section~\ref{sec:ladder}) ensures that at every scale of interest, there exists a dilution level where $k_{\max} = 8$ is sufficient.
+
+\subsection{The $k$NN estimator}
+\label{sec:knn_estimator}
+
+Define the effective pair-count densities:
+\begin{align}
+  \mathcal{D}^{\dd}(r) &\equiv \frac{d\langle N\rangle^{\dd}}{dr}(r) = \sum_{k=1}^{k_{\max}} \pdf^{\dd}_k(r)\,,\label{eq:D_DD}\\
+  \mathcal{D}^{\dr}(r) &\equiv \frac{d\langle N\rangle^{\dr}}{dr}(r) = \sum_{k=1}^{k_{\max}} \pdf^{\dr}_k(r)\,.\label{eq:D_DR}
+\end{align}
+These are the total pair-count densities at separation $r$, summed over all neighbors up to $k_{\max}$, for the DD and DR cases respectively.
+
+In the standard pair-counting framework, the pair count in a shell at radius $r$ around a typical data point is $4\pi r^2\,\nbar_{\rm eff}(1 + \xi(r))$ for DD and $4\pi r^2\,\nbar_{\rm eff}$ for DR (Eqs.~\ref{eq:DD_shell}--\ref{eq:DR_shell}).  Therefore:
+\begin{equation}
+  \boxed{1 + \xihat(r) \;=\; \frac{\mathcal{D}^{\dd}(r)}{\mathcal{D}^{\dr}(r)} \;=\; \frac{\sum_{k=1}^{k_{\max}} \pdf^{\dd}_k(r)}{\sum_{k=1}^{k_{\max}} \pdf^{\dr}_k(r)}\,.}
+  \label{eq:xi_estimator}
+\end{equation}
+This is the $k$NN estimator for $\xi(r)$.  It is the ratio of the total DD pair-count density to the total DR pair-count density, both reconstructed from the $k$NN distance distributions.
+
+\subsection{Equivalence to Landy--Szalay}
+\label{sec:equivalence}
+
+We now show that Eq.~\eqref{eq:xi_estimator} is equivalent to the LS estimator in the limit where the RR term is computed analytically.
+
+The LS estimator can be rewritten as
+\begin{equation}
+  \xihat_{\ls}(r) \;=\; \frac{\dd(r)}{\rr(r)} - 2\frac{\dr(r)}{\rr(r)} + 1\,.
+  \label{eq:LS_rewrite}
+\end{equation}
+\citet{Hamilton1993} showed that this is equivalent to
+\begin{equation}
+  1 + \xihat_{\ls}(r) \;=\; \frac{\dd(r)\cdot\rr(r)}{[\dr(r)]^2}\,.
+  \label{eq:Hamilton}
+\end{equation}
+In the regime where the random catalog perfectly traces the selection function and $N_R \to \infty$, the DR term converges to its expectation and $\rr(r) / \dr(r) \to \dr(r) / \dd_{\rm Poisson}(r)$, so that
+\begin{equation}
+  1 + \xihat_{\ls}(r) \;\to\; \frac{\dd(r)}{\dr(r)}\,,
+  \label{eq:LS_ratio}
+\end{equation}
+which is the Davis--Peebles estimator \citep{DavisHuchra1982}, and is identical in form to our Eq.~\eqref{eq:xi_estimator}.
+
+The LS estimator differs from Davis--Peebles by including the $\rr$ term, which corrects for fluctuations in the random catalog.  In the $k$NN framework, this correction is unnecessary when $N_R$ is large: the DR $k$NN-CDF converges to its expectation as $1/\sqrt{N_R}$, and for $N_R \gg N_d$ the fluctuations in DR are negligible compared to the cosmic variance in DD.  Moreover, for a Poisson process with known $\nbar$, the DR expectation is the Erlang distribution---available analytically---so no random catalog is needed for the reference term at all.
+
+When the selection function is non-trivial and $\nbar(x)$ is not constant, the random catalog encodes the geometry.  In this case, the DR $k$NN-CDF from randoms (drawn from $\nbar(x)$) to data correctly captures the expected pair count given the survey window, and the ratio in Eq.~\eqref{eq:xi_estimator} remains valid.
+
+\paragraph{The LS correction in $k$NN language.}  If one wishes to retain the full LS correction for finite random catalogs, the $k$NN analog is:
+\begin{equation}
+  1 + \xihat_{\ls}^{k\mathrm{NN}}(r) \;=\; \frac{\mathcal{D}^{\dd}(r) \cdot \mathcal{D}^{\rr}(r)}{[\mathcal{D}^{\dr}(r)]^2}\,,
+  \label{eq:xi_LS_knn}
+\end{equation}
+where $\mathcal{D}^{\rr}(r)$ is the RR pair-count density reconstructed from the RR $k$NN-CDFs (random-to-random queries).  For $N_R \gg N_d$, the cost of the RR query is $O(N_R \log N_R)$, which may exceed the DR cost but is still $O(N_R \log N_R)$ rather than $O(N_R^2)$.  In practice, $\mathcal{D}^{\rr}(r)$ can be computed analytically for simple geometries, or from a much smaller random catalog than used in standard LS, since it only needs to capture the geometry, not beat down shot noise.
+
+\subsection{The $k = 1$ estimator: simplest case}
+\label{sec:k1}
+
+For $k_{\max} = 1$, the estimator simplifies to
+\begin{equation}
+  1 + \xihat(r) \;=\; \frac{\pdf^{\dd}_1(r)}{\pdf^{\dr}_1(r)}\,.
+  \label{eq:xi_k1}
+\end{equation}
+This is the ratio of the 1NN PDFs.  The 1NN PDF at radius $r$ is the pair density at $r$ times the probability of no closer pair (the survival function):
+\begin{align}
+  \pdf^{\dr}_1(r) &= 4\pi r^2\,\nbar_{\rm eff}\,\exp\!\bigl[-\nbar_{\rm eff}\,V(r)\bigr]\,,\label{eq:pdf_DR_1}\\
+  \pdf^{\dd}_1(r) &= 4\pi r^2\,\nbar_{\rm eff}\,(1+\xi(r))\,\exp\!\bigl[-\nbar_{\rm eff}\,V(r)\,(1 + \bar{\xi}_V(r))\bigr]\,,\label{eq:pdf_DD_1}
+\end{align}
+where $\bar{\xi}_V(r) \equiv (3/r^3)\int_0^r \xi(r')\,r'^2\,dr'$ is the volume-averaged correlation function.  The ratio is
+\begin{equation}
+  \frac{\pdf^{\dd}_1(r)}{\pdf^{\dr}_1(r)} \;=\; (1 + \xi(r))\,\exp\!\bigl[-\nbar_{\rm eff}\,V(r)\,\bar{\xi}_V(r)\bigr]\,.
+  \label{eq:ratio_k1}
+\end{equation}
+The exponential factor is the survival correction: in a clustered field, a data point is more likely to have already found a very close neighbor, depleting the 1NN PDF at larger $r$.
+
+For $\xi \ll 1$ (large scales), $\bar{\xi}_V \ll 1$ and the correction is negligible: the ratio gives $1 + \xi(r)$ directly.  For $\xi \sim 1$ (nonlinear scales), the correction matters.  However, it depends only on $\bar{\xi}_V(r)$---the integral of $\xi$ at smaller scales---which is measured from the same data at smaller $r$.  The estimator is therefore self-calibrating: one measures $\xi(r)$ starting from the smallest scales (where the correction is largest but the signal is strongest) and propagates outward, using the already-measured small-scale $\xi$ to correct the survival factor at larger scales.
+
+\subsection{The summed estimator: using all $k$}
+\label{sec:summed}
+
+The summed estimator (Eq.~\ref{eq:xi_estimator}) combines information from all $k \leq k_{\max}$.  Its virtue is that the survival corrections partially cancel in the sum.  The total DD pair-count density $\mathcal{D}^{\dd}(r) = \sum_k \pdf^{\dd}_k(r)$ counts \emph{all} neighbors at distance $r$, regardless of how many closer neighbors exist.  Similarly for $\mathcal{D}^{\dr}(r)$.  The sum over $k$ restores the equivalence with the full pair count, where each pair at separation $r$ is counted once regardless of the pair ordering.
+
+Formally, for $k_{\max} \to \infty$:
+\begin{equation}
+  \sum_{k=1}^{\infty} \pdf^{QT}_k(r) \;=\; 4\pi r^2\,\nbar^{QT}_{\rm eff}(r)\,,
+  \label{eq:sum_pdf}
+\end{equation}
+where $\nbar^{QT}_{\rm eff}(r)$ is the mean density of targets at distance $r$ from a typical query point.  The survival corrections cancel exactly in the infinite sum, because every neighbor at distance $r$ is the $k$-th nearest for exactly one value of $k$.  The ratio $\mathcal{D}^{\dd}/\mathcal{D}^{\dr}$ then gives $1 + \xi(r)$ without any survival correction---identical to the standard pair-count ratio.
+
+For finite $k_{\max}$, the cancellation is incomplete: the contribution of pairs that are the $(k_{\max}+1)$-th or higher neighbor is missing.  But on scales where $\cdf^{QT}_{k_{\max}}(r) \approx 1$ (almost all query points have $\geq k_{\max}$ neighbors within $r$), the missing contribution is negligible.  The dilution ladder (Section~\ref{sec:ladder}) ensures this condition is met at every scale.

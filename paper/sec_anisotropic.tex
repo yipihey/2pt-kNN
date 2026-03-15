@@ -1,0 +1,94 @@
+%=============================================================================
+\section{Anisotropic Measurements: Multipoles and Projected Statistics}
+\label{sec:anisotropic}
+
+Galaxy surveys measure positions in redshift space, where peculiar velocities distort the radial coordinate.  The resulting anisotropy in the two-point correlation function---characterized by the Legendre multipoles $\xi_\ell(s)$ or the 2D function $\xi(r_p, \pi)$---is a primary observable for measuring the growth rate of structure.  We show that the $k$NN framework handles the anisotropic case with minimal modification: the tree and query algorithm are unchanged, and the anisotropy enters through post-processing of each neighbor's separation vector or through a query-time metric parameter.
+
+\subsection{Legendre multipoles from value-weighted pair counts}
+\label{sec:multipoles_detail}
+
+In redshift space, each pair has a separation vector $\mathbf{s}_{qj}$ with magnitude $s = |\mathbf{s}_{qj}|$ and cosine angle to the line of sight $\mu = \mathbf{s}_{qj}\cdot\hat{\mathbf{n}} / s$, where $\hat{\mathbf{n}}$ is the line-of-sight direction (fixed for the plane-parallel approximation, or the midpoint direction for wide-angle corrections).
+
+The Legendre multipoles are:
+\begin{equation}
+  1 + \xi_\ell(s) \;=\; (2\ell+1)\,\frac{\mathcal{D}^{\dd}_\ell(s)}{\mathcal{D}^{\dr}_\ell(s)}\,,
+  \label{eq:xi_ell}
+\end{equation}
+where the multipole pair-count density is:
+\begin{equation}
+  \mathcal{D}^{QT}_\ell(s) \;=\; \frac{d}{ds}\Biggl[\frac{1}{|Q|}\sum_{q \in Q}\sum_{j=1}^{k(q,s)} \mathcal{L}_\ell(\mu_{qj})\Biggr]\,.
+  \label{eq:D_ell}
+\end{equation}
+This is a value-weighted $k$NN measurement with the weight of each neighbor $j$ set to $v_j = \mathcal{L}_\ell(\mu_{qj})$.  The monopole ($\ell = 0$, $v_j = 1$) reduces to the isotropic estimator of Section~\ref{sec:estimator}.  The quadrupole ($\ell = 2$, $v_j = \frac{1}{2}(3\mu_{qj}^2 - 1)$) and hexadecapole ($\ell = 4$) use the same tree, the same neighbor lists, and the same distance computations; the only additional operation is computing $\mu_{qj}$ for each pair (one dot product and one division) and evaluating the Legendre polynomial.
+
+\paragraph{Survival corrections.}  The tree query finds the $k$ nearest neighbors in Euclidean (redshift-space) distance $s$.  The survival correction---the probability of not finding a closer neighbor---depends on $s$, not on $\mu$.  Since the Legendre weight $\mathcal{L}_\ell(\mu)$ depends on the pair geometry, not on the neighbor rank $k$, the survival corrections cancel in the sum over $k$ exactly as in the isotropic case (Section~\ref{sec:summed}).  The summed estimator for multipoles is therefore unbiased.
+
+\paragraph{Wide-angle corrections.}  For surveys with significant angular extent, the plane-parallel approximation breaks down for wide-angle pairs.  In the $k$NN framework, the wide-angle correction enters only through the definition of $\mu_{qj}$: instead of using a fixed $\hat{z}$, one uses the pair-specific line of sight (e.g.\ the midpoint direction or the Yamamoto endpoint estimator).  The tree query is unchanged.
+
+\subsection{The anisotropic metric for projected statistics}
+\label{sec:aniso_metric}
+
+For the projected correlation function $w_p(r_p) = 2\int_0^{\pi_{\max}} \xi(r_p, \pi)\,d\pi$ and for the 2D correlation function $\xi(r_p, \pi)$, the relevant neighbor proximity is in the transverse direction $r_p$, not in Euclidean distance $s$.  A pair with small $r_p$ but large line-of-sight separation $\pi$ contributes to $w_p$ but would not be among the $k$ nearest Euclidean neighbors.
+
+We address this with a query-time metric rescaling.  Define the metric parameter $\lambda \geq 1$ and the weighted distance:
+\begin{equation}
+  d_\lambda^2 \;\equiv\; r_p^2 + \frac{\pi^2}{\lambda^2}\,.
+  \label{eq:d_lambda}
+\end{equation}
+For $\lambda = 1$, this is the Euclidean distance $s$.  For $\lambda > 1$, the metric stretches the line-of-sight direction, making it ``cheaper'' to be far apart along the LOS.  In the limit $\lambda \to \infty$, the metric reduces to the transverse distance $r_p$.
+
+\paragraph{Tree compatibility.}  The metric rescaling is equivalent to working in coordinates $(x, y, \tilde{z})$ with $\tilde{z} = z/\lambda$.  For an in-place KD-tree with round-robin median splits, the tree structure is determined by the rank ordering of coordinates in each dimension.  Since rescaling $z \to z/\lambda$ preserves the rank ordering along $z$ (a monotone transformation), the \emph{tree topology is identical for all $\lambda$}.  The same data permutation, the same median splits, the same subtree structure.  Only the distance computation during the query changes: each squared coordinate difference $(\Delta z)^2$ is replaced by $(\Delta z)^2/\lambda^2$ in the distance and pruning calculations.
+
+This means a single tree build serves all $\lambda$ values.  The $\lambda$ parameter is passed at query time, modifying the distance kernel and the branch-pruning bounds.  For \textsc{bosque}, this requires a weighted-norm variant of the query function---a few lines of code in the inner loop, with no change to the tree build or data layout.
+
+\subsection{Ellipsoidal generating function}
+\label{sec:ellipsoidal_genfunc}
+
+In the $\lambda$-metric, the $k$NN sphere in rescaled coordinates corresponds to a prolate ellipsoid in physical coordinates, with semi-axes $(r, r, \lambda r)$ where $r$ is the $k$-th neighbor distance in the rescaled metric.  The volume is:
+\begin{equation}
+  V_\lambda(r) \;=\; \frac{4}{3}\pi r^3\,\lambda\,.
+  \label{eq:V_ellipsoid}
+\end{equation}
+
+The counts-in-cells generating function generalizes to:
+\begin{equation}
+  P_\lambda(z|V) \;=\; \exp\!\Biggl[\sum_{n=1}^{\infty}\frac{\nbar^n(z-1)^n}{n!}\,\bar{\xi}^{(n)}_{V,\lambda}\Biggr]\,,
+  \label{eq:genfunc_lambda}
+\end{equation}
+where $\bar{\xi}^{(n)}_{V,\lambda}$ are the $n$-point functions volume-averaged over the ellipsoidal region.  For $n = 2$:
+\begin{equation}
+  \sigma^2_{V,\lambda}(r_0) \;=\; \frac{1}{V_\lambda^2}\int\!\!\int_{\mathrm{ellipsoid}} d^3r_1\,d^3r_2\;\xi(|\mathbf{r}_1 - \mathbf{r}_2|)\,,
+  \label{eq:sigmaV_lambda}
+\end{equation}
+where the integration is over pairs of points within the ellipsoid.  The geometric weight function $W_\lambda(r|r_0)$---the overlap volume of two coaxial ellipsoids with semi-axes $(r_0, r_0, \lambda r_0)$ separated by distance $r$---replaces the sphere-overlap kernel $W(r|r_0)$.  For aligned ellipsoids (both oriented along the LOS), $W_\lambda$ depends on both the magnitude and the LOS-angle of the separation vector.
+
+The full kNN-CDF formalism---the Poisson$|\xi$ prediction, the $\Delta_k$ residuals, the factorial cumulants, the $\alpha_{\mathrm{SN}}(V)$ extraction---carries over with the substitution $V \to V_\lambda$ and $W \to W_\lambda$.  No additional theory is needed.
+
+\subsection{What $\lambda$ provides}
+\label{sec:lambda_provides}
+
+The metric parameter $\lambda$ connects the isotropic and projected statistics in a continuous family:
+\begin{itemize}[nosep]
+  \item $\lambda = 1$: isotropic kNN-CDFs, giving $\xi(s)$ and its multipoles.
+  \item $\lambda = \pi_{\max}/r_{p,\max} \sim 3$--$5$: kNN-CDFs in an elongated metric optimized for the $(r_p, \pi)$ measurement.  With $k_{\max} = 8$ and appropriate dilution, the $k$ nearest neighbors in this metric efficiently capture pairs with small $r_p$ and large $\pi$.
+  \item $\lambda \to \infty$: pure transverse kNN-CDFs, giving $w_p(r_p)$ (up to $\pi_{\max}$ set by the dilution scale).
+\end{itemize}
+
+Additionally, the $\lambda$-dependence of the kNN-CDFs and their residuals provides new diagnostic information:
+
+\paragraph{Anisotropic non-Gaussianity.}  The $\Delta_k$ residuals at different $\lambda$ values probe the anisotropic non-Poissonian structure.  Fingers-of-god (virial motions in clusters) produce excess close pairs along the LOS, visible as $\Delta_1 > 0$ at small $d_\lambda$ for large $\lambda$ (where the metric emphasizes the LOS direction).  Fiber collisions remove close transverse pairs, visible as $\Delta_1 < 0$ at small $d_\lambda$ for small $\lambda$.  The $\lambda$-dependence separates these effects.
+
+\paragraph{Alcock--Paczy\'nski sensitivity.}  The AP effect is a geometric distortion that changes the apparent aspect ratio of structures.  The $\lambda$ at which the kNN-CDFs are most consistent with the isotropic Poisson$|\xi$ prediction (minimizing $|\Delta_k|$ summed over $k$) constrains the AP parameter.  This provides an AP measurement from the counts-in-cells distribution, complementary to the standard AP measurement from the $\xi$ multipole ratio.
+
+\subsection{Practical workflow}
+\label{sec:aniso_workflow}
+
+The complete anisotropic measurement proceeds as follows:
+\begin{enumerate}[nosep]
+  \item Build the tree once on the data in physical redshift-space coordinates.
+  \item Query at $\lambda = 1$ for the Legendre multipoles $\xi_\ell(s)$.  For each query--neighbor pair, compute $\mu_{qj}$ and accumulate the Legendre-weighted pair-count densities.
+  \item Query at $\lambda_{\mathrm{proj}}$ (chosen to match $\pi_{\max}/r_{p,\max}$) for the projected statistics.  The $k$ nearest neighbors in the $\lambda_{\mathrm{proj}}$-metric efficiently capture the relevant pairs for $w_p(r_p)$ and $\xi(r_p, \pi)$.
+  \item Compute the $\Delta_k$ residuals at both $\lambda$ values.  The isotropic residuals probe the spherically-averaged non-Gaussianity; the anisotropic residuals diagnose LOS-specific effects.
+  \item Optionally, query at intermediate $\lambda$ values for AP sensitivity or for separating isotropic from LOS-specific non-Gaussianity.
+\end{enumerate}
+Steps 2--5 use the same tree.  Each $\lambda$ value requires a separate set of queries, with cost $O(N_R\log N_d)$ per $\lambda$.  The total cost for $n_\lambda$ metric values is $n_\lambda \times O(N_R\log N_d)$, typically with $n_\lambda = 2$--$3$.

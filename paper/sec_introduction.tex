@@ -1,0 +1,32 @@
+%=============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+The two-point correlation function $\xi(r)$, or equivalently the power spectrum $P(k)$, is the foundation of clustering analysis in cosmology.  Every major galaxy redshift survey---from CfA and SDSS through BOSS to the ongoing DESI and upcoming Euclid and Rubin LSST programs---relies on precise measurements of $\xi(r)$ to constrain cosmological parameters, detect Baryon Acoustic Oscillations, and characterize the growth of structure.
+
+The standard estimator for $\xi(r)$ from a galaxy catalog is the Landy--Szalay (LS) estimator \citep{Landy1993}:
+\begin{equation}
+  \xihat_{\ls}(r) \;=\; \frac{\dd(r) - 2\,\dr(r) + \rr(r)}{\rr(r)}\,,
+  \label{eq:LS}
+\end{equation}
+where $\dd(r)$, $\dr(r)$, and $\rr(r)$ are the normalized counts of data--data, data--random, and random--random pairs in a spherical shell at separation $r$.  The random catalog traces the survey selection function---angular mask, radial selection, completeness variations---and the LS estimator is optimal in the sense of minimum variance for a Poisson process \citep{Landy1993}.
+
+The computational cost of evaluating Eq.~\eqref{eq:LS} is dominated by pair counting.  For $N_d$ data points and $N_R$ random points, the brute-force cost is $O(N_d^2 + N_d N_R + N_R^2)$.  Tree-based algorithms (KD-trees, ball trees, octrees) reduce this by pruning distant pairs, but the cost remains $O(N \cdot N_{\rm shell})$ per radial bin, where $N_{\rm shell}$ is the typical number of objects in the shell.  At large separations, $N_{\rm shell}$ grows as $r^2$ and the acceleration is modest.  For current and next-generation surveys with $N_d \sim 10^7$--$10^8$ objects, the pair count is a significant computational bottleneck, particularly at large scales where $\xi(r)$ is small and high precision is needed.
+
+Several approaches have been developed to accelerate correlation function estimation: approximate pair counting \citep{Szapudi1998}, GPU-accelerated pair counters \citep{Sinha2020}, and Fourier-space methods that avoid pair counting entirely by estimating $P(k)$ on a grid and transforming.  The last approach is fast but introduces pixelization and aliasing, requires careful treatment of the survey window function, and does not directly yield $\xi(r)$ without a Fourier transform.
+
+In this paper, we propose an alternative approach based on $k$-Nearest Neighbor Cumulative Distribution Functions ($k$NN-CDF) \citep{Banerjee2020}.  Rather than counting all pairs at each separation, we query the spatial tree for the $k$ nearest neighbors of each point---a single operation that simultaneously provides information at all separations---and construct $\xi(r)$ from the resulting distance distributions.  The key idea is that the distribution of nearest-neighbor distances is a direct, well-understood functional of $\xi(r)$, and that the ratio of the data--data to data--random distributions isolates the clustering signal, just as the LS estimator does with pair counts.
+
+The method we describe has the following properties:
+\begin{itemize}[nosep]
+  \item \textbf{Cost:} $O(N_R \log N_d)$ for the data--random term, $O(N_d \log N_d)$ for the data--data term.  No pair counting.
+  \item \textbf{No binning:} the output is a continuous function of $r$, determined by the empirical CDF of nearest-neighbor distances.  There is no choice of radial bin width or bin centers.
+  \item \textbf{All scales simultaneously:} a single tree query for $k_{\max}$ neighbors returns information at all separations from the nearest-neighbor distance to the $k_{\max}$-th neighbor distance.
+  \item \textbf{Large-scale reach via dilution:}  a geometric ladder of diluted subsamples (each diluted by a factor of 8 relative to the previous) extends the measurement to arbitrarily large scales, with overlapping rungs providing built-in consistency checks and variance estimates.
+  \item \textbf{Survey weights:} per-object weights (FKP, completeness, systematic) are incorporated naturally via value-weighted $k$NN-CDFs.
+  \item \textbf{Reduced RR cost:} for a uniform periodic box, the RR term is the Erlang distribution (analytic, zero cost).  For surveys with non-trivial geometry and per-object weights, RR requires a random-to-random kNN query at cost $O(N_R \log N_R)$, replacing the $O(N_R^2)$ pair count.
+  \item \textbf{Anisotropic measurements:} Legendre multipoles $\xi_\ell(s)$ and the projected correlation function $w_p(r_p)$ are obtained from the same tree via value-weighting and a query-time metric parameter, with no additional tree construction.
+  \item \textbf{Free diagnostics:} the kNN residuals provide a scale-dependent measurement of non-Poissonian structure and non-Gaussian covariance contributions; the nonlinear density variance $\sigma^2(R)$ is measured as a continuous function of smoothing scale; and the spatial tree decomposition yields density-split clustering at all scales simultaneously.
+\end{itemize}
+
+The paper is organized as follows.  In Section~\ref{sec:background}, we review the connection between nearest-neighbor distributions and pair counts.  In Section~\ref{sec:estimator}, we construct the $k$NN estimator for $\xi(r)$ and prove its equivalence to the LS estimator.  In Section~\ref{sec:weights}, we incorporate survey geometry and per-object weights.  In Section~\ref{sec:ladder}, we describe the dilution ladder for multi-scale estimation with overlap.  In Section~\ref{sec:errors}, we analyze the error budget.  In Section~\ref{sec:nonpoisson}, we show that the kNN residuals provide a direct, scale-dependent measurement of non-Gaussian and non-Poissonian covariance contributions.  In Section~\ref{sec:anisotropic}, we extend the framework to redshift-space multipoles and projected statistics via an anisotropic query metric.  In Section~\ref{sec:implementation}, we describe the tree implementation, the spatial decomposition and its connection to density-split clustering and excursion set trajectories.  In Section~\ref{sec:validation}, we lay out the validation tests needed for adoption.  We discuss extensions and conclude in Section~\ref{sec:discussion}.

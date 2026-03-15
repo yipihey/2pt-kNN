@@ -1,0 +1,110 @@
+%=============================================================================
+\section{Survey Geometry and Per-Object Weights}
+\label{sec:weights}
+
+Real galaxy surveys have non-trivial geometry (angular masks, radial selection functions, fiber collisions) and require per-object weights for optimal estimation.  In this section we show how these are incorporated into the $k$NN estimator.
+
+\subsection{Survey random catalogs}
+\label{sec:survey_randoms}
+
+The standard practice in galaxy clustering analysis is to generate a random catalog of $N_R \gg N_d$ points drawn from the survey selection function $\nbar(x)$.  These randoms trace the expected number density at every point in the survey volume, encoding the angular mask, the radial selection, and any position-dependent completeness.  In the LS estimator, the DR and RR pair counts use these randoms as reference.
+
+In the $k$NN framework, the randoms play the same role: the DR $k$NN-CDF measures distances from survey randoms to data.  Because the randoms trace $\nbar(x)$, the DR CDF automatically accounts for the survey geometry.  No modification to the $k$NN query is needed---the standard survey random catalog is used directly as the set of query points.
+
+\subsection{The need for per-object weights}
+\label{sec:weight_need}
+
+In practice, each data galaxy carries a weight $w_i$ that corrects for various observational effects.  The most common weights are:
+\begin{itemize}[nosep]
+  \item \textbf{FKP weight} \citep{Feldman1994}: $w_{\rm FKP}(x) = 1/(1 + \nbar(x)\,P_0)$, which optimizes the signal-to-noise ratio for the power spectrum at a fiducial amplitude $P_0$.
+  \item \textbf{Completeness weight}: $w_{\rm comp}(x) = 1/C(x)$, where $C(x)$ is the probability that a galaxy at position $x$ is included in the catalog (e.g.\ due to fiber assignment).
+  \item \textbf{Systematic weight}: corrections for imaging systematics, stellar contamination, etc.
+\end{itemize}
+The total weight is typically the product: $w_i = w_{{\rm FKP},i}\,w_{{\rm comp},i}\,w_{{\rm sys},i}$.
+
+In the LS estimator, the weighted pair count is
+\begin{equation}
+  \dd_w(r) \;=\; \frac{\sum_{i \neq j} w_i\,w_j\,\Theta(r_{ij} \in \text{shell})}{\bigl(\sum_i w_i\bigr)^2}\,,
+  \label{eq:DD_weighted}
+\end{equation}
+and similarly for DR and RR.  The weights modulate each pair's contribution to the total.
+
+\subsection{Weighted $k$NN-CDFs}
+\label{sec:weighted_knn}
+
+In the $k$NN framework, per-object weights are incorporated through the value-weighted $k$NN-CDF formalism.  For each query point $q$ (a random point for DR, a data point for DD), the $k$ nearest data neighbors are found, and the weighted count is
+\begin{equation}
+  W_k(q) \;\equiv\; \sum_{j=1}^{k} w_{(j)}\,,
+  \label{eq:weighted_count}
+\end{equation}
+where $w_{(1)}, \ldots, w_{(k)}$ are the weights of the $k$ nearest neighbors, ordered by distance.
+
+The weighted pair-count density at separation $r$ is then
+\begin{equation}
+  \mathcal{D}^{QT}_w(r) \;\equiv\; \frac{d}{dr}\Bigl[\frac{1}{|Q|}\sum_{q \in Q} W(q, r)\Bigr]\,,
+  \label{eq:D_weighted}
+\end{equation}
+where $W(q, r) = \sum_{j: r_j \leq r} w_{(j)}$ is the cumulative weight within radius $r$.  This is the weighted analog of Eq.~\eqref{eq:pair_count_from_pdf}: instead of counting the number of neighbors at distance $r$, we sum their weights.
+
+The weighted estimator for $\xi(r)$ is then
+\begin{equation}
+  \boxed{1 + \xihat_w(r) \;=\; \frac{\mathcal{D}^{\dd}_w(r)}{\mathcal{D}^{\dr}_w(r)}\,.}
+  \label{eq:xi_weighted}
+\end{equation}
+
+\subsection{Practical implementation}
+\label{sec:weight_implementation}
+
+The implementation is straightforward:
+\begin{enumerate}[nosep]
+  \item Build a KD-tree on the data positions $\{x_i\}$.
+  \item For each query point $q$ (random or data), find the $k_{\max}$ nearest data neighbors, returning distances $r_{(1)}, \ldots, r_{(k_{\max})}$ and their weights $w_{(1)}, \ldots, w_{(k_{\max})}$.
+  \item Compute the cumulative weight profile $W(q, r)$ as a step function with jumps of $w_{(j)}$ at each $r_{(j)}$.
+  \item Average $W(q, r)$ over all query points and differentiate to get $\mathcal{D}_w(r)$.
+  \item Form the ratio $\mathcal{D}^{\dd}_w / \mathcal{D}^{\dr}_w$.
+\end{enumerate}
+
+Step 2 is the only computationally expensive operation, with cost $O(\log N_d)$ per query point.  The weights are retrieved from a lookup table indexed by the neighbor's identity (returned by the tree query along with the distance).  No additional tree construction or querying is needed beyond the standard $k$NN search.
+
+\subsection{Weights on the random catalog}
+\label{sec:random_weights}
+
+In some analyses, the random points also carry weights---for example, when the random catalog is generated with a non-uniform density that does not perfectly match the selection function, and a weight is applied to correct the residual mismatch.  In the $k$NN framework, random-point weights enter as weights on the query points themselves:
+\begin{equation}
+  \mathcal{D}^{\dr}_w(r) \;=\; \frac{d}{dr}\Biggl[\frac{\sum_{q \in R} w_q^R\,W(q, r)}{\sum_{q \in R} w_q^R}\Biggr]\,,
+  \label{eq:DR_random_weighted}
+\end{equation}
+where $w_q^R$ is the weight of random point $q$.  This is a weighted average of the cumulative weight profiles, with the random weights determining the relative contribution of each query point.
+
+\subsection{The interaction between weights and the survival correction}
+\label{sec:weight_survival}
+
+For the individual $k$NN PDFs, the per-object weights interact with the survival correction: a high-weight neighbor at small distance contributes more to the weighted count, potentially affecting the effective survival probability at larger distances.  However, in the summed estimator (Eq.~\ref{eq:xi_weighted}), the survival corrections cancel just as they do in the unweighted case (Section~\ref{sec:summed}).  The sum $\mathcal{D}_w(r) = \sum_k \pdf^{QT}_{w,k}(r)$ counts each neighbor once, weighted by $w_{(j)}$, regardless of its rank.  The rank ordering is merely a bookkeeping device used by the tree query; the final sum over $k$ erases it.
+
+Therefore, the weighted estimator (Eq.~\ref{eq:xi_weighted}) is exact whenever $k_{\max}$ is large enough that virtually all query points have $\geq k_{\max}$ neighbors within radius $r$.  No correction for the interaction between weights and survival is needed.
+
+\subsection{Comparison with weighted LS}
+\label{sec:weight_comparison}
+
+The weighted $k$NN estimator (Eq.~\ref{eq:xi_weighted}) and the weighted LS estimator (Eq.~\ref{eq:DD_weighted}) use the same information---the weighted pair counts---but access it differently.  LS sums $w_i\,w_j$ over all pairs at separation $r$; the $k$NN approach sums $w_{(j)}$ over nearest neighbors of each query point and then differentiates.
+
+For the DD term, the LS weight is a \emph{product} $w_i\,w_j$, while the $k$NN weight is a \emph{sum} $\sum w_{(j)}$.  These are not identical.  The LS product weighting up-weights pairs where \emph{both} members are high-weight; the $k$NN sum weighting up-weights neighbors that are individually high-weight, regardless of the weight of the query point.
+
+To recover the exact LS product weighting, the $k$NN query point must also carry a weight.  For the DD case, the query point is a data point with weight $w_q$, and the weighted pair-count density becomes
+\begin{equation}
+  \mathcal{D}^{\dd}_{w \times w}(r) \;=\; \frac{d}{dr}\Biggl[\frac{\sum_{q \in D} w_q\,W(q, r)}{\sum_{q \in D} w_q}\Biggr]\,,
+  \label{eq:DD_product_weighted}
+\end{equation}
+which is the weighted average of the cumulative neighbor-weight profiles, with each data point's profile weighted by its own weight.  This gives each pair the product weight $w_q \cdot w_{(j)}$, recovering the LS convention exactly.
+
+The DR term is analogous, with random query-point weights $w_q^R$ as in Eq.~\eqref{eq:DR_random_weighted}.
+
+\subsection{Summary of the weighted estimator}
+\label{sec:weight_summary}
+
+The full weighted $k$NN estimator, with product weighting matching the LS convention, is:
+\begin{equation}
+  1 + \xihat_{w \times w}(r) \;=\; \frac{\mathcal{D}^{\dd}_{w \times w}(r)}{\mathcal{D}^{\dr}_{w \times w}(r)}\,.
+  \label{eq:xi_full_weighted}
+\end{equation}
+Each term is computed from weighted sums over $k$NN query results.  The weights on query points (data or random) and on their neighbors (data) enter multiplicatively, reproducing the LS pair-weighting scheme.  The computational cost remains $O(N_R \log N_d)$ for DR and $O(N_d \log N_d)$ for DD, independent of the weights.

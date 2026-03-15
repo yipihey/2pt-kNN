@@ -1,0 +1,45 @@
+# Rust
+/target/
+Cargo.lock
+
+# LaTeX
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+validation/*.aux
+validation/*.bbl
+validation/*.blg
+validation/*.log
+validation/*.out
+validation/*.toc
+validation/*.fls
+validation/*.fdb_latexmk
+validation/*.synctex.gz
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data files (tracked via git-lfs or not at all)
+data/*.fits
+data/*.hdf5
+data/*.npy
+
+# Plot outputs (regenerable)
+plots/*.svg
+plots/*.png
+plots/*.pdf
+plots/*.tsv

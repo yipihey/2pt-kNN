@@ -1,0 +1,70 @@
+%=============================================================================
+\section{Background: Nearest-Neighbor Distributions and Pair Counts}
+\label{sec:background}
+
+We begin by establishing the precise mathematical relationship between nearest-neighbor distance distributions and the pair-counting operations that underlie the Landy--Szalay estimator.
+
+\subsection{Pair counts as integrals of the density field}
+\label{sec:pair_counts}
+
+Consider $N_d$ data points $\{x_i\}$ distributed in a survey volume $\mathcal{V}$ according to an inhomogeneous Poisson process with rate $\lambda(x) = \nbar(x)(1 + \delta(x))$, where $\nbar(x)$ is the expected number density (encoding the selection function) and $\delta(x)$ is the density contrast.  The two-point correlation function is $\xi(r) = \langle \delta(x)\,\delta(x') \rangle$ for $|x - x'| = r$.
+
+The normalized data--data pair count in a thin shell $(r, r + dr)$ around a randomly chosen data point is
+\begin{equation}
+  \dd(r)\,dr \;=\; \frac{1}{N_d}\sum_{i=1}^{N_d} \nbar(x_i)\,(1 + \xi(r))\,4\pi r^2\,dr \;+\; O(\xi^2)\,,
+  \label{eq:DD_shell}
+\end{equation}
+where the sum over $i$ samples the density-weighted positions.  The data--random pair count is
+\begin{equation}
+  \dr(r)\,dr \;=\; \frac{1}{N_d}\sum_{i=1}^{N_d} \nbar(x_i)\,4\pi r^2\,dr\,,
+  \label{eq:DR_shell}
+\end{equation}
+where the randoms trace $\nbar(x)$ by construction.  The random--random pair count is
+\begin{equation}
+  \rr(r)\,dr \;=\; \langle \nbar \rangle\,4\pi r^2\,dr\,,
+  \label{eq:RR_shell}
+\end{equation}
+the expectation for the selection-function-weighted uniform field.  The LS estimator (Eq.~\ref{eq:LS}) combines these to isolate $\xi(r)$.
+
+\subsection{The $k$NN-CDF and its connection to pair counts}
+\label{sec:knn_pair}
+
+The $k$-th nearest neighbor CDF from a set of query points $Q$ to a set of target points $T$ is defined as
+\begin{equation}
+  \cdf^{QT}_{k}(r) \;\equiv\; \frac{1}{|Q|}\sum_{q \in Q} \mathbf{1}\bigl(r^{QT}_{k}(q) \leq r\bigr)\,,
+  \label{eq:cdf_def}
+\end{equation}
+where $r^{QT}_k(q)$ is the distance from query point $q$ to its $k$-th nearest neighbor in $T$.  Taking $Q$ to be the random catalog and $T$ to be the data gives the DR $k$NN-CDF; taking both $Q$ and $T$ to be the data (excluding self-pairs) gives the DD $k$NN-CDF.
+
+The derivative of the CDF with respect to $r$ is the PDF of $k$-th nearest-neighbor distances:
+\begin{equation}
+  \pdf^{QT}_k(r) \;\equiv\; \frac{d}{dr}\cdf^{QT}_k(r)\,.
+  \label{eq:pdf_def}
+\end{equation}
+For the DR case (random-to-data), this PDF is related to pair counts by
+\begin{equation}
+  \pdf^{\dr}_k(r) \;=\; 4\pi r^2\,\nbar_{\rm eff}(r)\,\frac{[\nbar_{\rm eff}(r)\,V(r)]^{k-1}}{(k-1)!}\,\exp\!\bigl[-\nbar_{\rm eff}(r)\,V(r)\bigr]\,,
+  \label{eq:pdf_DR}
+\end{equation}
+where $V(r) = \frac{4}{3}\pi r^3$ and $\nbar_{\rm eff}(r)$ is the effective mean density averaged over the survey geometry at scale $r$.  This is the generalized Erlang distribution.  For a uniform survey with constant $\nbar$, it reduces to the standard Erlang form used in \citet{Banerjee2020}.
+
+For the DD case (data-to-data), the PDF acquires a clustering term:
+\begin{equation}
+  \pdf^{\dd}_k(r) \;=\; 4\pi r^2\,\nbar_{\rm eff}(r)\,(1 + \xi_k^{\rm eff}(r))\,\frac{[\nbar_{\rm eff}(r)\,V_k^{\rm eff}(r)]^{k-1}}{(k-1)!}\,\exp\!\bigl[-\nbar_{\rm eff}(r)\,V_k^{\rm eff}(r)\bigr]\,,
+  \label{eq:pdf_DD}
+\end{equation}
+where $\xi_k^{\rm eff}(r)$ and $V_k^{\rm eff}(r)$ encode the clustering evaluated at scale $r$ and the cumulative effect of clustering on the survival probability (the exponential factor), respectively.  The precise form of these corrections is developed in Section~\ref{sec:estimator}.
+
+\subsection{The key observation}
+\label{sec:key_observation}
+
+The ratio of the DD to DR PDFs at any radius $r$ is
+\begin{equation}
+  \frac{\pdf^{\dd}_k(r)}{\pdf^{\dr}_k(r)} \;=\; (1 + \xi_k^{\rm eff}(r))\,\times\,\mathcal{S}_k(r)\,,
+  \label{eq:ratio}
+\end{equation}
+where $\mathcal{S}_k(r)$ is a \emph{survival correction} arising from the different exponential factors in Eqs.~\eqref{eq:pdf_DR} and~\eqref{eq:pdf_DD}.  This survival correction accounts for the fact that the probability of not having found a closer neighbor is different in the clustered (DD) and unclustered (DR) cases.
+
+For $k = 1$ and $\xi \ll 1$, the survival correction is close to unity and the ratio directly measures $1 + \xi(r)$.  For higher $k$ and stronger clustering, the correction is computable from the lower-$k$ CDFs, making the estimator self-calibrating.
+
+This ratio plays exactly the same role as $\dd/\rr$ in the Peebles--Hauser estimator \citep{Peebles1974,DavisHuchra1982}, but without the need to count all pairs---only the nearest neighbors.

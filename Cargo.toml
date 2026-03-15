@@ -1,0 +1,33 @@
+[package]
+name = "twopoint"
+version = "0.1.0"
+edition = "2021"
+description = "Two-point correlation function estimation via kNN distribution ladders"
+license = "MIT"
+repository = "https://github.com/yipihey/twopoint"
+
+[lib]
+name = "twopoint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "twopoint-validate"
+path = "src/bin/validate.rs"
+
+[dependencies]
+bosque = "0.3"
+kuva = { git = "https://github.com/Psy-Fer/kuva" }
+rand = "0.8"
+rand_distr = "0.4"
+rayon = "1.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+approx = "0.5"
+
+[features]
+default = []
+python = []  # future: pyo3 bindings

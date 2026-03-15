@@ -1,0 +1,118 @@
+% Notes for computational comparison with Euclid pipeline
+% Based on:
+%   - Euclid Collaboration 2025 (2501.16555) - 2PCF estimation methodology
+%   - Keihänen et al. 2022 (2205.11852) - Linear Construction covariance speedup
+%   - Kerscher et al. 2022 (2210.xxxxx) - Improved accuracy estimators
+
+% KEY FINDINGS FROM EUCLID PIPELINE:
+
+% 1. SCALE OF THE PROBLEM
+%    - 20-30 million Halpha galaxies, z = 0.9-1.8
+%    - Random catalog with M = N_R/N_d ratio typically 50x
+%    - That's ~1 billion random points
+%    - Need xi(r_p, pi) in 2D bins: 200 x 100 = 20,000 bins
+%    - Need to run on ~1000-3000 mocks for covariance
+
+% 2. COMPUTATIONAL BOTTLENECK IN EUCLID
+%    - RR pair counting dominates when M >> 1 (M = 50)
+%    - With split random trick: RR cost ~ M * N_d^2 / M^2 = N_d^2 / M
+%    - DR cost ~ N_d * N_R = M * N_d^2
+%    - DD cost ~ N_d^2
+%    - Total dominated by DR for large M
+%    - Uses kd-tree, octree, AND linked-list methods (3 independent implementations!)
+%    - OpenMP parallelization (shared memory)
+
+% 3. LINEAR CONSTRUCTION (LC) TRICK (Keihänen et al. 2022)
+%    - Key insight: covariance of LS estimator can be decomposed into
+%      terms that depend on M=1 and M=2 random catalogs only
+%    - Construct covariance for arbitrary M from these two measurements
+%    - Speedup factor of 14x for M=50 with 2 Mpc/h bins
+%    - This is specifically for COVARIANCE estimation on mocks
+%    - The actual xi measurement still needs M=50
+
+% 4. WHAT kNN APPROACH CHANGES:
+%    
+%    a) RR is ANALYTIC (Erlang distribution) - zero cost
+%       Euclid spends significant compute on RR even with split randoms
+%       kNN: RR = 0 computation
+%    
+%    b) DR is O(N_R log N_d) not O(N_R * N_shell)
+%       Each random does one kNN query, not a pair count across all bins
+%       The kNN query traverses O(log N_d) nodes, not O(N_shell) pairs
+%       For large r, N_shell ~ n_bar * 4pi r^2 dr can be very large
+%    
+%    c) DD is O(N_d log N_d) not O(N_d * N_shell) or O(N_d^2)
+%       Same tree-traversal argument
+%    
+%    d) No binning choice for radial bins
+%       Euclid uses 200 x 100 bins in (r_p, pi)
+%       kNN gives continuous function, bin in post-processing if desired
+%    
+%    e) Covariance from dilution subsamples is FREE
+%       No need for 1000-3000 mock runs
+%       No need for LC trick
+%       Built into the measurement
+
+% 5. WHERE kNN DOES NOT HELP OR IS WORSE:
+%    
+%    a) The (r_p, pi) grid for large pi_max
+%       Need large k_max or the lambda-metric trick
+%       Standard pair counting in cylindrical bins may be simpler
+%    
+%    b) Very fine angular binning in mu
+%       Each kNN neighbor contributes to one mu value
+%       For 100 mu bins, you need enough neighbors per query point
+%       The kNN approach has Poisson noise per (r, mu) cell
+%    
+%    c) Massive parallelization across nodes (MPI)
+%       Euclid uses shared-memory OpenMP
+%       kNN tree queries are embarrassingly parallel (each query independent)
+%       so this is equally good for kNN
+%    
+%    d) The 2D (r_p, pi) measurement at fine binning
+%       This is where conventional pair counting with cylindrical shells
+%       may remain competitive, especially for Corrfunc-type optimized codes
+
+% 6. REALISTIC COMPARISON FOR EUCLID NUMBERS:
+%    N_d = 20 million (one redshift bin)
+%    N_R = 50 * N_d = 1 billion
+%    s_max = 200 Mpc/h, with 1 Mpc/h bins
+%    
+%    Standard LS (with tree acceleration):
+%      DD: N_d * N_shell(s_max) ~ 2e7 * (n_bar * 4pi * 200^2 * 1) ~ 2e7 * 1e4 = 2e11
+%      DR: N_R * N_shell ~ 1e9 * 1e4 = 1e13
+%      RR: with split random, ~ N_R^2 / M = (1e9)^2 / 50 = 2e16 ... no, split reduces this
+%      Actually RR with split: M subsets of N_d each, count within, ~ M * N_d^2 = 50 * (2e7)^2 = 2e16
+%      This is huge. LC trick reduces covariance cost by 14x.
+%    
+%    kNN ladder:
+%      Tree build: O(N_d log N_d) ~ 2e7 * 25 = 5e8 per dilution level
+%      DR query: O(N_R log N_d) ~ 1e9 * 25 = 2.5e10 (for one lambda value)
+%      DD query: O(N_d log N_d) ~ 5e8 per dilution level
+%      RR: 0
+%      
+%      Total per level: ~2.5e10 (dominated by DR)
+%      5 levels: ~1.3e11
+%      
+%      vs. standard DR alone: 1e13
+%      Speedup: ~80x on DR term
+%      
+%      But: kNN query returns k=8 neighbors with full position info
+%      Standard pair count bins into (r_p, pi) simultaneously
+%      So per-query cost may differ by constant factors
+%    
+%    The real comparison needs wall-clock benchmarks, not op counts.
+%    bosque at 10 ms for 1M queries on 100K data = 10 ns/query
+%    Extrapolating: 1B queries on 20M data ~ 1B * (10 ns * log(20M)/log(100K)) ~ 15 seconds??
+%    That can't be right. Need actual benchmarks.
+
+% 7. WHAT TO WRITE IN THE PAPER:
+%    - Replace the simplistic O(N^2) vs O(N log N) table
+%    - Acknowledge the Euclid pipeline's actual optimizations:
+%      split randoms, LC covariance, tree-accelerated pair counting
+%    - Be honest about where kNN wins and where it doesn't
+%    - The real win is: RR = 0, continuous in r, covariance from subsamples
+%    - The marginal win is: DR cost reduction (log N vs N_shell, but N_shell
+%      is also reduced by tree acceleration in standard codes)
+%    - The new win is: free diagnostics (Delta_k, sigma_NL, DSC)
+%    - Defer definitive benchmarks to the validation section / code paper

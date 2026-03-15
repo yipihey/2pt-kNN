@@ -1,0 +1,84 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage[numbers]{natbib}
+\usepackage{enumitem}
+\usepackage{bm}
+
+\newcommand{\nbar}{\bar{n}}
+\newcommand{\xihat}{\hat{\xi}}
+\newcommand{\dd}{\mathrm{DD}}
+\newcommand{\dr}{\mathrm{DR}}
+\newcommand{\rr}{\mathrm{RR}}
+\newcommand{\ls}{\mathrm{LS}}
+\newcommand{\knn}{$k$NN}
+\newcommand{\cdf}{\mathrm{CDF}}
+\newcommand{\pdf}{\mathrm{PDF}}
+
+\title{Fast Correlation Function Estimation\\via Nearest-Neighbor Distribution Ladders}
+\author{T.\ Abel \textit{et al.}\\KIPAC / Stanford University}
+\date{Draft --- March 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The two-point correlation function $\xi(r)$ is the primary summary statistic for the clustering analysis of galaxy surveys.  Its estimation via the Landy--Szalay estimator requires counting all pairs of objects at each separation, with computational cost scaling as $O(N^2)$ or, with tree acceleration, $O(N \cdot N_{\rm shell})$ per radial bin.  We show that the $k$-Nearest Neighbor Cumulative Distribution Functions (\knn{}-CDF), combined with a geometric ladder of diluted subsamples, provide an estimator of $\xi(r)$ that is mathematically equivalent to the Landy--Szalay estimator in the limit of fine binning, while requiring only $O(N_R \log N)$ computation.  We develop the full formalism including survey-geometry random catalogs and per-object weights (FKP, completeness, systematic), and demonstrate exact equivalence at the two-point level.  We analyze the error budget---showing where the \knn{} approach matches, exceeds, or falls short of brute-force pair counting---and describe the dilution ladder that extends the measurement to scales far beyond the mean inter-particle separation with built-in variance estimation from overlapping rungs.  The method requires no choice of radial binning, returns $\xi(r)$ as a continuous function, and provides all scales simultaneously from a single tree construction per dilution level.
+\end{abstract}
+
+\tableofcontents
+
+\input{sec_introduction}
+\input{sec_background}
+\input{sec_estimator}
+\input{sec_weights}
+\input{sec_ladder}
+\input{sec_errors}
+\input{sec_nonpoisson}
+\input{sec_anisotropic}
+\input{sec_implementation}
+\input{sec_validation}
+\input{sec_discussion}
+
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+\bibitem{Landy1993} Landy S.~D., Szalay A.~S., 1993, ApJ, 412, 64
+\bibitem{Feldman1994} Feldman H.~A., Kaiser N., Peacock J.~A., 1994, ApJ, 426, 23
+\bibitem{Hamilton1993} Hamilton A.~J.~S., 1993, ApJ, 417, 19
+\bibitem{Banerjee2020} Banerjee A., Abel T., 2021, MNRAS, 500, 5479
+\bibitem{Banerjee2021} Banerjee A., Abel T., 2021, MNRAS, 504, 2911
+\bibitem{Kerscher1999} Kerscher M., et al., 1999, ApJ, 513, 543
+\bibitem{Sinha2020} Sinha M., Garrison L.~H., 2020, MNRAS, 491, 3022
+\bibitem{DESI2016} DESI Collaboration, 2016, arXiv:1611.00036
+\bibitem{Peebles1974} Peebles P.~J.~E., 1974, A\&A, 32, 197
+\bibitem{DavisHuchra1982} Davis M., Huchra J., 1982, ApJ, 254, 437
+\bibitem{Szapudi1998} Szapudi I., Szalay A.~S., 1998, ApJ, 494, L41
+\bibitem{Hartlap2007} Hartlap J., Simon P., Schneider P., 2007, A\&A, 464, 399
+\bibitem{Norberg2009} Norberg P., Baugh C.~M., Gazta\~naga E., Croton D.~J., 2009, MNRAS, 396, 19
+\bibitem{VargasFrias2018} Vargas-Maga\~na M., et al., 2018, MNRAS, 477, 1153
+\bibitem{OConnell2016} O'Connell R., Eisenstein D.~J., Vargas M., Ho S., Padmanabhan N., 2016, MNRAS, 462, 2681
+\bibitem{OConnell2019} O'Connell R., Eisenstein D.~J., 2019, MNRAS, 487, 2701
+\bibitem{Philcox2019} Philcox O.~H.~E., Eisenstein D.~J., 2019, MNRAS, 490, 5931
+\bibitem{Philcox2020} Philcox O.~H.~E., Eisenstein D.~J., O'Connell R., Wiegand A., 2020, MNRAS, 491, 3290
+\bibitem{Rashkovetskyi2024} Rashkovetskyi M., et al., 2025, JCAP, 01, 145
+\bibitem{Barreira2018} Barreira A., Krause E., Schmidt F., 2018, JCAP, 06, 015
+\bibitem{Takada2013} Takada M., Hu W., 2013, Phys.\ Rev.\ D, 87, 123504
+\bibitem{Lacasa2019} Lacasa F., Grain J., 2019, A\&A, 624, A61
+\bibitem{Colombi1996} Colombi S., Bouchet F.~R., Schaeffer R., 1996, ApJS, 105, 37
+\bibitem{Gaztanaga2005} Gazta\~naga E., Scoccimarro R., 2005, MNRAS, 361, 824
+\bibitem{Scoccimarro1999} Scoccimarro R., Zaldarriaga M., Hui L., 1999, ApJ, 527, 1
+\bibitem{VillaescusaNavarro2020} Villaescusa-Navarro F., et al., 2020, ApJS, 250, 2
+\bibitem{bosque} \textsc{bosque}, \url{https://github.com/cavemanloverboy/bosque}
+\bibitem{Press1974} Press W.~H., Schechter P., 1974, ApJ, 187, 425
+\bibitem{Sheth2001} Sheth R.~K., Tormen G., 2002, MNRAS, 329, 61
+\bibitem{Bond1991} Bond J.~R., Cole S., Efstathiou G., Kaiser N., 1991, ApJ, 379, 440
+\bibitem{Gruen2016} Gruen D., et al., 2016, MNRAS, 455, 3367
+\bibitem{Friedrich2018} Friedrich O., et al., 2018, Phys.\ Rev.\ D, 98, 023508
+\bibitem{Paillas2024} Paillas E., et al., 2024, MNRAS, 531, 898
+\bibitem{EuclidLXXII} Euclid Collaboration, de la Torre S., et al., 2025, A\&A, 700, A78
+\bibitem{Keihanen2022} Keih\"anen E., et al., 2022, A\&A, 666, A129
+\end{thebibliography}
+
+\end{document}

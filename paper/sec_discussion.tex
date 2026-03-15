@@ -1,0 +1,75 @@
+%=============================================================================
+\section{Discussion and Outlook}
+\label{sec:discussion}
+
+\subsection{Relation to previous work}
+\label{sec:previous}
+
+The connection between nearest-neighbor distances and the void probability function was recognized by \citet{Kerscher1999}.  \citet{Banerjee2020} developed the full $k$NN-CDF framework and demonstrated its sensitivity to all connected $N$-point functions.  \citet{Banerjee2021} extended it to cross-correlations between two point sets.  The present work differs in focus: rather than using $k$NN-CDFs as a beyond-two-point summary statistic for cosmological parameter estimation, we use them as a \emph{computational shortcut} for the standard two-point correlation function measurement.  The goal is not to extract additional information (though the $k$NN-CDFs do contain higher-order information), but to extract the \emph{same} two-point information faster.
+
+This distinction is important for the intended audience.  Survey analysis pipelines are built around $\xi(r)$ and $P(k)$; they have well-characterized covariance models, window function corrections, and systematic error budgets.  Introducing a new summary statistic requires re-deriving all of these.  By showing that the $k$NN approach gives the same $\xi(r)$, we allow it to be adopted as a drop-in replacement for the pair-counting step, without changing anything downstream.
+
+\subsection{Angular correlation functions}
+\label{sec:angular}
+
+The formalism developed here applies directly to 3D correlation functions measured from spectroscopic surveys.  For photometric surveys, the primary observable is the angular correlation function $w(\theta)$, measured from projected positions on the sky.  The $k$NN framework generalizes straightforwardly to 2D: the tree is built on angular coordinates, the CDFs measure angular nearest-neighbor distances, and the estimator for $w(\theta)$ follows the same DD/DR ratio structure.  The computational savings are even larger in 2D, since the pair count grows as $N \cdot N_{\rm annulus}$ with $N_{\rm annulus} \propto \theta$ rather than $r^2$.
+
+\subsection{Covariance estimation}
+\label{sec:covariance}
+
+Accurate covariance matrices for $\xi(r)$ measurements are critical for cosmological parameter inference.  The current state of the art for DESI uses the RascalC code \citep{Philcox2020,Rashkovetskyi2024}, which computes a semi-analytical covariance in the Gaussian approximation (using the measured $\xi$ and the random catalog to encode the survey geometry) and approximates non-Gaussian contributions by rescaling the shot-noise terms with a single parameter $\alpha_{\mathrm{SN}}$, calibrated from jackknife resampling or a small set of mocks.
+
+The $k$NN framework interacts with this covariance pipeline at three levels:
+
+\paragraph{(i) Drop-in compatibility.}  Since the $k$NN estimator gives the same $\xi(r)$ as LS (Section~\ref{sec:equivalence}), any existing covariance matrix is directly applicable.  No changes to the downstream pipeline are needed.
+
+\paragraph{(ii) Dilution-ladder variance.}  The multiple subsamples at each dilution level provide an empirical covariance estimate, analogous to jackknife but with natural scale separation (Section~\ref{sec:variance}).  This can serve as an independent cross-check on mock-based or semi-analytical covariances.
+
+\paragraph{(iii) Scale-dependent $\alpha_{\mathrm{SN}}$ from kNN residuals.}  As developed in Section~\ref{sec:nonpoisson}, the non-Poissonian residuals $\Delta_k(r_0)$ provide a direct measurement of the excess variance $\delta\sigma^2_N(V)$ at each scale, replacing the single-parameter $\alpha_{\mathrm{SN}}$ with a data-driven, scale-dependent function.  This is the most novel contribution of the kNN approach to the covariance problem: it upgrades the least constrained ingredient of the RascalC pipeline at no additional computational cost.
+
+\subsection{Computational cost}
+\label{sec:cost}
+
+A fair comparison with current survey pipelines must account for the optimizations already in use.  The Euclid 2PCF pipeline \citep{EuclidLXXII} uses tree-accelerated pair counting (kd-tree, octree, or linked-list methods) with OpenMP parallelization, split random catalogs to reduce the RR cost, and the Linear Construction method \citep{Keihanen2022} to speed up mock-based covariance estimation.  We compare the asymptotic scaling, but caution that wall-clock performance depends on constants, cache behavior, and parallelization efficiency that can only be determined by benchmarking (Section~\ref{sec:validation}).
+
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Operation & Tree-accelerated LS & $k$NN ladder \\
+\midrule
+DD & $O(N_d \cdot N_{\rm shell})$ & $O(N_d \log N_d)$ per level \\
+DR & $O(N_R \cdot N_{\rm shell})$ & $O(N_R \log N_d)$ per level \\
+RR (uniform, unweighted) & $O(N_R^2)$ or split & Analytic (Erlang) \\
+RR (weighted survey) & $O(N_R^2)$ or split & $O(N_R \log N_R)$ \\
+Mock-based covariance & $N_{\rm mock} \times$ above & $N_{\rm mock} \times$ above \\
+Binning & Required (pre-chosen) & Not needed \\
+Non-Poissonian diagnostics & Not available & Free (from same query) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Here $N_{\rm shell}$ is the mean number of objects in a radial shell at the separation of interest.  For tree-accelerated pair counting, the effective $N_{\rm shell}$ depends on the tree pruning efficiency and is typically much smaller than the naive shell count, particularly at small separations where the tree prunes aggressively.  At large separations ($r \gtrsim 100\,h^{-1}\,\mathrm{Mpc}$), $N_{\rm shell}$ grows as $r^2$ and tree acceleration provides diminishing returns; this is exactly where the kNN dilution ladder is most advantageous.
+
+The kNN approach does not eliminate the need for mock-based covariance estimation.  Mock catalogs are essential for validating the pipeline, characterizing systematic errors, and computing the model-dependent covariance at different points in parameter space.  Whatever speedup the kNN method provides per catalog applies equally to the mock runs.  The dilution-ladder variance (Section~\ref{sec:variance}) is a complementary, data-driven diagnostic that provides an independent cross-check on the mock-based covariance but does not replace it.
+
+Definitive wall-clock benchmarks at survey scale ($N_d \sim 2 \times 10^7$, $N_R \sim 10^9$) comparing bosque-based kNN queries to Corrfunc and the Euclid 2PCF code are deferred to the companion code paper.
+
+\subsection{Summary}
+\label{sec:summary_final}
+
+We have shown that the $k$-Nearest Neighbor CDF framework provides an estimator for the two-point correlation function $\xi(r)$ that is:
+\begin{itemize}[nosep]
+  \item Mathematically equivalent to the Landy--Szalay estimator when the summed pair-count density is used with sufficient $k_{\max}$.
+  \item Computationally faster by orders of magnitude, scaling as $O(N_R \log N_d)$ rather than $O(N^2)$.
+  \item Naturally continuous in $r$, requiring no choice of radial binning.
+  \item Compatible with survey geometry and per-object weights through the value-weighted $k$NN-CDF formalism.
+  \item Extendable to large scales via the dilution ladder, with built-in overlap consistency checks and empirical variance estimation.
+  \item Equivalent in statistical precision to pair counting, with the same cosmic variance floor and the same shot noise.
+\end{itemize}
+
+Beyond estimating $\xi(r)$ itself, the $k$NN framework provides---at no additional computational cost---a scale-dependent diagnostic of non-Poissonian structure in the galaxy point process (Section~\ref{sec:nonpoisson}).  The residual between the measured kNN-CDFs and the Poisson$|\xi$ prediction yields the excess factorial moments at each scale, directly measuring the non-Gaussian and non-Poissonian contributions that enter the covariance matrix.  This enables a data-driven, scale-dependent replacement for the single-parameter shot-noise rescaling used in current semi-analytical covariance estimation (RascalC), potentially improving covariance accuracy for both BAO and full-shape analyses.
+
+The method is immediately applicable to any survey that currently uses pair counting for $\xi(r)$ estimation.  It requires only a standard KD-tree implementation and the survey random catalog.  We encourage the LSS community to validate the approach on existing mock catalogs and adopt it where the computational savings are significant.
+
+Code implementing the $k$NN ladder estimator, including survey weight support, the dilution scheme, and the non-Poissonian diagnostic, will be made publicly available.

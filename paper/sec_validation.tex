@@ -1,0 +1,102 @@
+%=============================================================================
+\section{Validation Strategy}
+\label{sec:validation}
+
+We outline the suite of tests needed to validate the $k$NN estimator for adoption by the LSS measurement community.  These tests are organized by the claim they verify, in order of increasing specificity.
+
+\subsection{Test 1: Exact recovery of $\xi(r)$ from Poisson mocks}
+\label{sec:test_poisson}
+
+\paragraph{Setup.}  Generate $N_{\mathrm{mock}} = 1000$ Poisson realizations in a periodic box ($L = 2000\,h^{-1}\,\mathrm{Mpc}$, $\nbar = 3 \times 10^{-4}\,h^3\,\mathrm{Mpc}^{-3}$, giving $N_d \approx 2.4 \times 10^6$).  No clustering: $\xi(r) = 0$.
+
+\paragraph{Test.}  Compute $\xihat(r)$ via the $k$NN estimator (Eq.~\ref{eq:xi_estimator}) with $k_{\max} = 8$ and $N_R = 10^7$ randoms.  Verify:
+\begin{enumerate}[nosep]
+  \item $\langle\xihat(r)\rangle = 0$ to within statistical precision across all $r$.
+  \item The scatter of $\xihat(r)$ across mocks matches the Poisson prediction: $\mathrm{Var}[\xihat] = (1 + \xi)^2 / (N_{\rm pairs}\,\Delta r) \approx 1/(\nbar^2 V_{\rm survey}\,4\pi r^2\,\Delta r)$.
+  \item The kNN-CDFs match the Erlang distribution exactly.
+  \item $\Delta_k(r_0) = 0$ for all $k$ and $r_0$ (no non-Poissonian residual).
+\end{enumerate}
+This verifies the basic machinery and establishes the noise floor.
+
+\subsection{Test 2: Equivalence with Corrfunc on $N$-body mocks}
+\label{sec:test_corrfunc}
+
+\paragraph{Setup.}  Use the Quijote simulation suite \citep{VillaescusaNavarro2020}: 15,000 $N$-body realizations at fiducial cosmology, each with $512^3$ particles in a $(1\,h^{-1}\,\mathrm{Gpc})^3$ box.  Construct halo catalogs with FoF or Rockstar, matching DESI LRG number density ($\nbar \approx 3 \times 10^{-4}$) via mass thresholding.
+
+\paragraph{Test.}  For each of 100 randomly selected realizations:
+\begin{enumerate}[nosep]
+  \item Compute $\xihat_{\mathrm{LS}}(r)$ using Corrfunc \citep{Sinha2020} with 30 linearly spaced bins from $1$ to $200\,h^{-1}\,\mathrm{Mpc}$.
+  \item Compute $\xihat_{k\mathrm{NN}}(r)$ using the $k$NN estimator at the same separations (evaluating the continuous $k$NN estimate at the bin centers).
+  \item Form the difference $\delta\xi(r) = \xihat_{k\mathrm{NN}} - \xihat_{\mathrm{LS}}$ and verify that $\langle\delta\xi\rangle$ is consistent with zero at all $r$ to within $\lesssim 0.1\sigma$.
+  \item Compare the mock-to-mock scatter of $\xihat_{k\mathrm{NN}}$ and $\xihat_{\mathrm{LS}}$: they must be statistically identical, confirming equivalent information content.
+\end{enumerate}
+Any systematic bias $\langle\delta\xi\rangle \neq 0$ at any scale would indicate a failure of the estimator and must be traced to its origin (finite $k_{\max}$, CDF differentiation, survival correction).
+
+\subsection{Test 3: Dilution ladder consistency}
+\label{sec:test_ladder}
+
+\paragraph{Setup.}  Same Quijote halo catalogs.
+
+\paragraph{Test.}  At each dilution level $R_\ell = 1, 8, 64, 512$:
+\begin{enumerate}[nosep]
+  \item Compute $\xihat(r)$ from $M_\ell$ subsamples using $k = 1, \ldots, 8$.
+  \item Verify overlap consistency: $\xihat$ from $k = 8$ at level $\ell$ agrees with $\xihat$ from $k = 1$ at level $\ell + 1$ in the overlap region (Section~\ref{sec:overlap}).
+  \item Verify that the combined ladder $\xihat(r)$ agrees with the direct Corrfunc measurement at all scales from $5$ to $150\,h^{-1}\,\mathrm{Mpc}$.
+  \item Quantify the subsample variance at each level and compare to the mock-to-mock variance (which includes cosmic variance).
+\end{enumerate}
+
+\subsection{Test 4: Survey weights}
+\label{sec:test_weights}
+
+\paragraph{Setup.}  Apply realistic DESI-like weights to the Quijote halo catalogs: FKP weights with $P_0 = 10^4\,h^{-3}\,\mathrm{Mpc}^3$, plus random incompleteness (angular mask with $\sim 70\%$ area coverage, radial selection function $\nbar(z)$ declining at high $z$).  Generate a random catalog tracing the selection function.
+
+\paragraph{Test.}
+\begin{enumerate}[nosep]
+  \item Compute $\xihat_w(r)$ with the weighted $k$NN estimator (Eq.~\ref{eq:xi_full_weighted}) and with weighted Corrfunc.
+  \item Verify agreement to $\lesssim 0.1\sigma$ at all scales.
+  \item Check that the product weighting (query weight $\times$ neighbor weight) reproduces the LS convention exactly (Section~\ref{sec:weight_comparison}).
+  \item Test sensitivity to the random catalog density: verify convergence as $N_R / N_d$ increases from 10 to 50.
+\end{enumerate}
+
+\subsection{Test 5: Non-Poissonian residuals}
+\label{sec:test_nonpoisson}
+
+\paragraph{Setup.}  Same Quijote halo catalogs (non-Poisson due to halo exclusion and the halo mass function).
+
+\paragraph{Test.}
+\begin{enumerate}[nosep]
+  \item Measure $\xihat(r)$ via the $k$NN estimator.
+  \item Compute $\sigma_V^2(r_0)$ from $\xihat$ and predict the Poisson$|\xi$ kNN-CDFs (Eq.~\ref{eq:genfunc_poisson_xi}).
+  \item Measure $\Delta_k(r_0)$ for $k = 1, \ldots, 8$ across scales $r_0 = 1$--$100\,h^{-1}\,\mathrm{Mpc}$.
+  \item Compute $\delta\sigma^2_N(V)$ and $\alpha_{\mathrm{SN}}(V)$ (Eqs.~\ref{eq:excess_var_from_delta}--\ref{eq:alpha_scale_dependent}).
+  \item Compare $\alpha_{\mathrm{SN}}(V)$ to the single $\alpha_{\mathrm{SN}}$ obtained from the RascalC jackknife pipeline on the same mocks.  The scale-averaged $\alpha_{\mathrm{SN}}(V)$ should be consistent with the RascalC value.
+  \item Verify that the $\Delta_k$ residuals at $r_0 \lesssim 5\,h^{-1}\,\mathrm{Mpc}$ show the expected halo-exclusion signature ($\Delta_1 < 0$).
+  \item Feed $\alpha_{\mathrm{SN}}(V)$ into RascalC and compare the resulting covariance matrix to the mock sample covariance.  The scale-dependent rescaling should reduce the $\lesssim 8\%$ residual found with a single parameter \citep{Rashkovetskyi2024}.
+\end{enumerate}
+This is the most demanding test and the one that validates the standout contribution of Section~\ref{sec:nonpoisson}.
+
+\subsection{Test 6: Computational scaling}
+\label{sec:test_scaling}
+
+\paragraph{Setup.}  Vary $N_d$ from $10^4$ to $10^7$ and $N_R$ from $10^5$ to $10^8$.
+
+\paragraph{Test.}  Measure wall-clock time for the $k$NN estimator (tree build + query) and for Corrfunc (pair count) on the same hardware.  Verify:
+\begin{enumerate}[nosep]
+  \item The $k$NN cost scales as $O(N_R \log N_d)$.
+  \item The crossover point (where $k$NN becomes faster than Corrfunc) occurs at $N_d \sim 10^5$--$10^6$.
+  \item For DESI-scale catalogs ($N_d \sim 10^7$), the speedup is $\gtrsim 100\times$.
+\end{enumerate}
+
+\subsection{Figure plan}
+\label{sec:figures}
+
+The paper requires the following figures to make the case convincing:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Estimator comparison} (Test 2): $\xihat_{k\mathrm{NN}}(r)$ vs.\ $\xihat_{\mathrm{LS}}(r)$ for a representative Quijote realization, with residuals in a lower panel showing consistency at the $\lesssim 0.1\%$ level.
+  \item \textbf{Dilution ladder} (Test 3): $\xi(r)$ from all dilution levels and $k$ values, color-coded by level, showing overlap consistency and coverage from $5$ to $150\,h^{-1}\,\mathrm{Mpc}$.
+  \item \textbf{Non-Poissonian residuals} (Test 5): $\Delta_k(r_0)$ for $k = 1, 2, 4, 8$ as a function of $r_0$, showing the halo-exclusion deficit at small $r_0$ and the non-Gaussian excess at quasi-linear scales.  The Poisson$|\xi$ prediction is the zero line.
+  \item \textbf{Scale-dependent $\alpha_{\mathrm{SN}}$} (Test 5): $\alpha_{\mathrm{SN}}(V)$ from the $k$NN residuals compared to the single RascalC value (horizontal line), showing the scale dependence.
+  \item \textbf{Covariance comparison} (Test 5): correlation matrices from (a) mock sample covariance, (b) RascalC with constant $\alpha_{\mathrm{SN}}$, (c) RascalC with $k$NN-measured $\alpha_{\mathrm{SN}}(V)$.  The $k$NN-improved version should be closer to the mock truth.
+  \item \textbf{Computational scaling} (Test 6): wall-clock time vs.\ $N_d$ for $k$NN and Corrfunc, showing the crossover and the asymptotic $O(N \log N)$ vs.\ $O(N^2)$ scaling.
+\end{enumerate}

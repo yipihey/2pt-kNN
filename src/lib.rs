@@ -15,13 +15,22 @@
 //! All heavy lifting lives in the library; the binary targets are thin
 //! control layers following the scix-client pattern.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tree;
 pub mod mock;
 pub mod estimator;
 pub mod ladder;
 pub mod diagnostics;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod corrfunc;
+pub mod validation;
 
+#[cfg(feature = "typst-plots")]
+pub mod plotting;
+#[cfg(feature = "gpu")]
+pub mod gpu;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 #[cfg(feature = "interactive")]
 pub mod explorer;
 

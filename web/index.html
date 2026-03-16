@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>twopoint — kNN 2PCF Explorer</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>twopoint — kNN Two-Point Correlation Explorer</h1>
+        <span id="gpu-badge" class="badge badge-pending">Detecting GPU...</span>
+    </header>
+
+    <main>
+        <!-- Left panel: Controls -->
+        <aside id="controls">
+            <h2>Parameters</h2>
+
+            <div class="control-group">
+                <h3>Presets</h3>
+                <div class="preset-buttons">
+                    <button id="preset-tiny" class="preset-btn">Tiny (50k)</button>
+                    <button id="preset-euclid" class="preset-btn active">Euclid (100k)</button>
+                    <button id="preset-large" class="preset-btn">Large (500k)</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label for="n-points">N_points: <span id="n-points-val">100000</span></label>
+                <input type="range" id="n-points" min="10000" max="500000" step="10000" value="100000">
+            </div>
+
+            <div class="control-group">
+                <label for="n-lines">N_lines: <span id="n-lines-val">10000</span></label>
+                <input type="range" id="n-lines" min="1000" max="50000" step="1000" value="10000">
+            </div>
+
+            <div class="control-group">
+                <label for="n-mocks">N_mocks: <span id="n-mocks-val">10</span></label>
+                <input type="range" id="n-mocks" min="1" max="50" step="1" value="10">
+            </div>
+
+            <div class="control-group">
+                <label for="k-max">k_max: <span id="k-max-val">8</span></label>
+                <input type="range" id="k-max" min="1" max="8" step="1" value="8">
+            </div>
+
+            <div class="control-group">
+                <label for="n-bins">N_bins: <span id="n-bins-val">40</span></label>
+                <input type="range" id="n-bins" min="10" max="100" step="5" value="40">
+            </div>
+
+            <div class="control-group">
+                <label for="r-min">r_min: <span id="r-min-val">5.0</span></label>
+                <input type="range" id="r-min" min="1" max="50" step="1" value="5">
+            </div>
+
+            <div class="control-group">
+                <label for="r-max">r_max: <span id="r-max-val">250.0</span></label>
+                <input type="range" id="r-max" min="100" max="500" step="10" value="250">
+            </div>
+
+            <div class="control-group">
+                <label for="random-ratio">N_R/N_D: <span id="random-ratio-val">5</span></label>
+                <input type="range" id="random-ratio" min="1" max="20" step="1" value="5">
+            </div>
+
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="use-gpu" checked>
+                    Use WebGPU acceleration
+                </label>
+            </div>
+
+            <button id="run-btn" class="run-button">Run Validation</button>
+
+            <div id="progress-container" class="hidden">
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <span id="progress-text">Initializing...</span>
+            </div>
+        </aside>
+
+        <!-- Center panel: Plots -->
+        <section id="plot-panel">
+            <nav class="tab-bar">
+                <button class="tab active" data-tab="xi">&#x03BE;(r)</button>
+                <button class="tab" data-tab="r2xi">r&#xB2;&#x03BE;(r)</button>
+                <button class="tab" data-tab="cdf">kNN-CDF</button>
+                <button class="tab" data-tab="dilution">Dilution</button>
+            </nav>
+
+            <div id="plot-area">
+                <div id="plot-xi" class="plot-content active">
+                    <p class="placeholder">Click "Run Validation" to generate plots.</p>
+                </div>
+                <div id="plot-r2xi" class="plot-content">
+                    <p class="placeholder">r&#xB2;&#x03BE;(r) comparison — emphasizes BAO-scale features.</p>
+                </div>
+                <div id="plot-cdf" class="plot-content">
+                    <p class="placeholder">kNN-CDF: empirical cumulative distributions of k-th nearest neighbor distances.<br>
+                    <em>Unique to the kNN method — pair counting cannot produce this.</em></p>
+                </div>
+                <div id="plot-dilution" class="plot-content">
+                    <p class="placeholder">Dilution ladder: model-free variance estimates from random subsamples.<br>
+                    <em>These statistics come free from the same kNN queries — no additional computation.</em></p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right panel: Statistics -->
+        <aside id="stats-panel">
+            <h2>Statistics</h2>
+
+            <div id="summary-stats">
+                <table id="stats-table">
+                    <tr><td>&#x03C7;&#xB2;/dof</td><td id="stat-chi2">—</td></tr>
+                    <tr><td>N_mocks</td><td id="stat-nmocks">—</td></tr>
+                    <tr><td>N_bins</td><td id="stat-nbins">—</td></tr>
+                    <tr><td>Backend</td><td id="stat-backend">—</td></tr>
+                    <tr><td>Time</td><td id="stat-time">—</td></tr>
+                </table>
+            </div>
+
+            <h3>Dilution Scales</h3>
+            <div id="dilution-info">
+                <p class="placeholder">Run validation to see dilution ladder characteristic scales.</p>
+            </div>
+
+            <h3>Data Table</h3>
+            <div id="data-table-container">
+                <table id="data-table">
+                    <thead>
+                        <tr>
+                            <th>r</th>
+                            <th>&#x03BE;_analytic</th>
+                            <th>&#x03BE;_mean</th>
+                            <th>&#x03C3;</th>
+                        </tr>
+                    </thead>
+                    <tbody id="data-table-body">
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="download-buttons">
+                <button id="download-tsv" class="download-btn" disabled>Download TSV</button>
+                <button id="download-svg" class="download-btn" disabled>Download SVG</button>
+            </div>
+        </aside>
+    </main>
+
+    <footer>
+        <span id="footer-info">
+            twopoint v0.1.0 | kNN Landy–Szalay estimator | Abel et al. (2026)
+        </span>
+    </footer>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

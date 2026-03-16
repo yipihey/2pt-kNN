@@ -10,7 +10,9 @@
 //! For uniform periodic boxes (no weights), D^RR is the Erlang distribution
 //! (analytic), and the estimator simplifies to DD/DR (Davis–Peebles).
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::tree::PointTree;
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 /// kNN query result for a single query point: distances to k nearest neighbors.
@@ -66,6 +68,7 @@ impl LandySzalayKnn {
     ///
     /// Returns the distance distributions: for each query point, the
     /// Euclidean distances to its k_max nearest data neighbors.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn query_distances(
         &self,
         data_tree: &PointTree,
@@ -73,8 +76,12 @@ impl LandySzalayKnn {
     ) -> KnnDistributions {
         let k_max = self.k_max;
 
-        let per_query: Vec<KnnDistances> = queries
-            .par_iter()
+        #[cfg(feature = "parallel")]
+        let iter = queries.par_iter();
+        #[cfg(not(feature = "parallel"))]
+        let iter = queries.iter();
+
+        let per_query: Vec<KnnDistances> = iter
             .map(|q| {
                 let neighbors = data_tree.nearest_k(q, k_max);
                 let distances: Vec<f64> = neighbors.iter().map(|n| n.dist).collect();
@@ -86,6 +93,7 @@ impl LandySzalayKnn {
     }
 
     /// Run kNN queries with periodic boundary conditions.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn query_distances_periodic(
         &self,
         data_tree: &PointTree,
@@ -94,8 +102,12 @@ impl LandySzalayKnn {
     ) -> KnnDistributions {
         let k_max = self.k_max;
 
-        let per_query: Vec<KnnDistances> = queries
-            .par_iter()
+        #[cfg(feature = "parallel")]
+        let iter = queries.par_iter();
+        #[cfg(not(feature = "parallel"))]
+        let iter = queries.iter();
+
+        let per_query: Vec<KnnDistances> = iter
             .map(|q| {
                 let neighbors = data_tree.nearest_k_periodic(q, k_max, box_size);
                 let distances: Vec<f64> = neighbors.iter().map(|n| n.dist).collect();

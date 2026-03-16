@@ -9,27 +9,73 @@ repository = "https://github.com/yipihey/twopoint"
 [lib]
 name = "twopoint"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "twopoint-validate"
 path = "src/bin/validate.rs"
+required-features = ["cli", "kuva-plots"]
+
+[features]
+default = ["cli", "parallel", "kuva-plots"]
+cli = ["dep:clap"]
+parallel = ["dep:rayon"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
+wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:serde-wasm-bindgen", "dep:js-sys", "dep:web-sys", "getrandom/js"]
+interactive = ["dep:crossterm"]
+kuva-plots = ["dep:kuva"]
+typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-as-lib", "dep:comemo"]
+python = []  # future: pyo3 bindings
 
 [dependencies]
-bosque = "0.2"
-kuva = { git = "https://github.com/Psy-Fer/kuva" }
+bosque = { version = "0.2", default-features = false, features = ["sqrt-dist"] }
 rand = "0.8"
 rand_distr = "0.4"
-rayon = "1.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+getrandom = "0.2"
+
+# Optional: CLI
+clap = { version = "4", features = ["derive"], optional = true }
+
+# Optional: parallelism (not available on wasm32)
+rayon = { version = "1.10", optional = true }
+
+# Optional: kuva plotting (CLI/native)
+kuva = { git = "https://github.com/Psy-Fer/kuva", optional = true }
+
+# Optional: TUI explorer
 crossterm = { version = "0.28", optional = true }
+
+# Optional: typst+lilaq plotting (WASM/web)
+typst = { version = "0.14", optional = true }
+typst-svg = { version = "0.14", optional = true }
+typst-as-lib = { version = "0.15", optional = true }
+comemo = { version = "0.4", optional = true }
+
+# Optional: GPU (WebGPU via wgpu)
+wgpu = { version = "24", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
+
+# Optional: WASM entry points
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["console"] }
+
+[[example]]
+name = "test_plot"
+required-features = ["typst-plots"]
+
+[[example]]
+name = "test_plot_only"
+required-features = ["typst-plots"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
 
 [dev-dependencies]
 approx = "0.5"
-
-[features]
-default = []
-interactive = ["dep:crossterm"]
-python = []  # future: pyo3 bindings

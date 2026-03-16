@@ -34,7 +34,7 @@ use rand::Rng;
 use rand::SeedableRng;
 
 /// Parameters for the CoxMock generator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CoxMockParams {
     /// Side length of the periodic cube
     pub box_size: f64,

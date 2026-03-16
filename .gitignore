@@ -2,6 +2,9 @@
 /target/
 Cargo.lock
 
+# WASM build artifacts (regenerable via wasm-pack)
+web/pkg/
+
 # LaTeX
 paper/*.aux
 paper/*.bbl

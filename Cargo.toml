@@ -14,16 +14,15 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "twopoint-validate"
 path = "src/bin/validate.rs"
-required-features = ["cli", "kuva-plots"]
+required-features = ["cli", "typst-plots"]
 
 [features]
-default = ["cli", "parallel", "kuva-plots"]
+default = ["cli", "parallel", "typst-plots"]
 cli = ["dep:clap"]
 parallel = ["dep:rayon"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:serde-wasm-bindgen", "dep:js-sys", "dep:web-sys", "getrandom/js"]
-interactive = ["dep:crossterm"]
-kuva-plots = ["dep:kuva"]
+interactive = ["dep:crossterm", "typst-plots"]
 typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-as-lib", "dep:comemo"]
 python = []  # future: pyo3 bindings
 
@@ -41,9 +40,6 @@ clap = { version = "4", features = ["derive"], optional = true }
 
 # Optional: parallelism (not available on wasm32)
 rayon = { version = "1.10", optional = true }
-
-# Optional: kuva plotting (CLI/native)
-kuva = { git = "https://github.com/Psy-Fer/kuva", optional = true }
 
 # Optional: TUI explorer
 crossterm = { version = "0.28", optional = true }

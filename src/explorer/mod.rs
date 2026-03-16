@@ -6,69 +6,13 @@
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal;
-use kuva::backend::svg::SvgBackend;
-use kuva::plot::{BandPlot, LinePlot, ScatterPlot};
-use kuva::render::annotations::ReferenceLine;
-use kuva::render::figure::Figure;
-use kuva::render::layout::Layout;
-use kuva::render::plots::Plot;
-use kuva::render::render::render_multiple;
 use std::io::{Read as _, Write};
 use std::net::TcpListener;
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-/// Erlang CDF for the k-th nearest neighbor at distance r, given number density.
-fn erlang_cdf(k: usize, r: f64, nbar: f64) -> f64 {
-    let lambda = nbar * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
-    let mut sum = 0.0;
-    let mut term = 1.0;
-    for j in 0..k {
-        if j > 0 {
-            term *= lambda / j as f64;
-        }
-        sum += term;
-    }
-    1.0 - (-lambda).exp() * sum
-}
-
-/// Erlang PDF (derivative of CDF w.r.t. r) for the k-th nearest neighbor.
-///
-/// f_k(r) = nbar · 4π r² · exp(−λ) · λ^(k−1) / (k−1)!
-/// where λ = nbar · (4π/3) · r³.
-fn erlang_pdf(k: usize, r: f64, nbar: f64) -> f64 {
-    let lambda = nbar * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
-    let dlambda_dr = nbar * 4.0 * std::f64::consts::PI * r.powi(2);
-    if k == 0 || r <= 0.0 {
-        return 0.0;
-    }
-    // log(λ^(k-1) / (k-1)!) = (k-1)*ln(λ) - ln((k-1)!)
-    let log_term = (k as f64 - 1.0) * lambda.ln()
-        - (1..k).map(|j| (j as f64).ln()).sum::<f64>();
-    dlambda_dr * (-lambda + log_term).exp()
-}
-
-/// All computed arrays needed for plotting, populated from validate.rs after the mock loop.
-pub struct PlotData {
-    pub r_centers: Vec<f64>,
-    pub r_smooth: Vec<f64>,
-    pub xi_smooth: Vec<f64>,
-    pub mean_xi: Vec<f64>,
-    pub std_xi: Vec<f64>,
-    pub bias_sigma: Vec<f64>,
-    pub all_xi: Vec<Vec<f64>>,
-    pub line_length: f64,
-    pub cdf_rr_summary: Option<crate::ladder::KnnCdfSummary>,
-    pub cdf_nbar: f64,
-    // Corrfunc reference data (all Optional so explorer works without it)
-    pub corrfunc_mean_xi: Option<Vec<f64>>,
-    pub corrfunc_std_xi: Option<Vec<f64>>,
-    pub corrfunc_all_xi: Option<Vec<Vec<f64>>>,
-    pub knn_times: Option<Vec<f64>>,
-    pub corrfunc_times: Option<Vec<f64>>,
-    pub level_tags: Option<Vec<usize>>,
-}
+use crate::plotting::{self, PlotConfig, PlotData, TypstPlotter};
 
 /// Which plot is currently displayed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +109,87 @@ impl PlotKind {
             PlotKind::Summary => (false, false),
         }
     }
+
+    /// Render function for this plot kind.
+    fn render_source(self, data: &PlotData, config: &PlotConfig) -> String {
+        match self {
+            PlotKind::XiComparison => plotting::render_xi_comparison(data, config),
+            PlotKind::Residuals => plotting::render_residuals(data, config),
+            PlotKind::R2Xi => plotting::render_r2xi(data, config),
+            PlotKind::CdfComparison => plotting::render_cdf_comparison(data, config),
+            PlotKind::PeakedCdf => plotting::render_peaked_cdf(data, config),
+            PlotKind::IndividualMocks => plotting::render_individual_mocks(data, config),
+            PlotKind::XiRatio => plotting::render_xi_ratio(data, config),
+            PlotKind::TimingComparison => plotting::render_timing(data, config),
+            PlotKind::Summary => plotting::render_xi_comparison(data, config), // fallback
+        }
+    }
+
+    /// Compute natural data ranges for zoom/pan support.
+    fn data_ranges(self, data: &PlotData) -> ((f64, f64), (f64, f64)) {
+        match self {
+            PlotKind::XiComparison | PlotKind::IndividualMocks => {
+                let xr = data_extent(&data.r_centers);
+                let ymin = data.mean_xi.iter().zip(data.std_xi.iter())
+                    .map(|(&m, &s)| m - s)
+                    .fold(f64::INFINITY, f64::min);
+                let ymax = data.mean_xi.iter().zip(data.std_xi.iter())
+                    .map(|(&m, &s)| m + s)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                (xr, (ymin, ymax))
+            }
+            PlotKind::Residuals => {
+                let xr = data_extent(&data.r_centers);
+                let yr = data_extent(&data.bias_sigma);
+                (xr, (yr.0.min(-3.0), yr.1.max(3.0)))
+            }
+            PlotKind::R2Xi => {
+                let xr = data_extent(&data.r_centers);
+                let n = data.r_centers.len();
+                let vals: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * data.mean_xi[i]).collect();
+                let yr = data_extent(&vals);
+                (xr, yr)
+            }
+            PlotKind::CdfComparison | PlotKind::PeakedCdf => {
+                if let Some(ref cdf) = data.cdf_rr_summary {
+                    let xr = data_extent(&cdf.r_values);
+                    (xr, (0.0, 1.0))
+                } else {
+                    ((1.0, 100.0), (0.0, 1.0))
+                }
+            }
+            PlotKind::XiRatio => {
+                let xr = data_extent(&data.r_centers);
+                (xr, (0.95, 1.05))
+            }
+            PlotKind::TimingComparison => {
+                let n = data.knn_times.as_ref().map(|t| t.len()).unwrap_or(1);
+                let all_times: Vec<f64> = data.knn_times.iter()
+                    .flatten()
+                    .chain(data.corrfunc_times.iter().flatten())
+                    .copied()
+                    .collect();
+                let yr = if all_times.is_empty() { (0.0, 1.0) } else { data_extent(&all_times) };
+                ((0.0, n as f64), yr)
+            }
+            PlotKind::Summary => {
+                let xr = data_extent(&data.r_centers);
+                let yr = data_extent(&data.mean_xi);
+                (xr, yr)
+            }
+        }
+    }
+}
+
+fn data_extent(vals: &[f64]) -> (f64, f64) {
+    let lo = vals.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if (hi - lo).abs() < 1e-15 {
+        (lo - 1.0, hi + 1.0)
+    } else {
+        let pad = (hi - lo) * 0.05;
+        (lo - pad, hi + pad)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -182,8 +207,8 @@ struct PlotViewState {
 /// Mutable state for the explorer.
 struct ExplorerState {
     plot_kind: PlotKind,
-    /// Per-plot view settings (one per PlotKind, indexed by PlotKind::index()).
     views: [PlotViewState; 9],
+    plotter: TypstPlotter,
     status_message: String,
     show_help: bool,
     quit: bool,
@@ -203,6 +228,7 @@ impl ExplorerState {
         Self {
             plot_kind: PlotKind::XiComparison,
             views,
+            plotter: TypstPlotter::new(),
             status_message: String::new(),
             show_help: false,
             quit: false,
@@ -218,7 +244,6 @@ impl ExplorerState {
         &mut self.views[idx]
     }
 
-    /// Reset the current plot's view to its default log scales, auto ranges.
     fn reset_current_view(&mut self) {
         let (log_x, log_y) = self.plot_kind.default_log();
         let v = self.view_mut();
@@ -228,7 +253,6 @@ impl ExplorerState {
         v.y_range = None;
     }
 
-    /// Reset all views to defaults (used on summary screen).
     fn reset_all_views(&mut self) {
         for kind in &PlotKind::ALL {
             let (log_x, log_y) = kind.default_log();
@@ -243,608 +267,48 @@ impl ExplorerState {
 }
 
 // ---------------------------------------------------------------------------
-// Plot builders (return raw plots + layout, no dimensions applied)
+// SVG rendering via typst + lilaq
 // ---------------------------------------------------------------------------
 
-/// Build raw (plots, layout) for a non-summary plot kind.
-fn build_raw(kind: PlotKind, data: &PlotData) -> (Vec<Plot>, Layout) {
-    match kind {
-        PlotKind::XiComparison => build_xi_comparison(data),
-        PlotKind::Residuals => build_residuals(data),
-        PlotKind::R2Xi => build_r2xi(data),
-        PlotKind::CdfComparison => build_cdf_comparison(data),
-        PlotKind::PeakedCdf => build_peaked_cdf(data),
-        PlotKind::IndividualMocks => build_individual_mocks(data),
-        PlotKind::XiRatio => build_xi_ratio(data),
-        PlotKind::TimingComparison => build_timing_comparison(data),
-        PlotKind::Summary => build_xi_comparison(data), // fallback, not used directly
+fn config_from_view(view: &PlotViewState, width_cm: f64, height_cm: f64) -> PlotConfig {
+    PlotConfig {
+        width_cm,
+        height_cm,
+        log_x: view.log_x,
+        log_y: view.log_y,
+        x_range: view.x_range,
+        y_range: view.y_range,
     }
 }
 
-/// Apply a PlotViewState (log scales, range overrides) to a layout.
-fn apply_view(layout: &mut Layout, view: &PlotViewState) {
-    if view.log_x {
-        layout.log_x = true;
-    }
-    if view.log_y {
-        layout.log_y = true;
-    }
-    if let Some((lo, hi)) = view.x_range {
-        layout.x_range = (lo, hi);
-        layout.x_axis_min = Some(lo);
-        layout.x_axis_max = Some(hi);
-    }
-    if let Some((lo, hi)) = view.y_range {
-        layout.y_range = (lo, hi);
-        layout.y_axis_min = Some(lo);
-        layout.y_axis_max = Some(hi);
-    }
-}
-
-fn build_xi_comparison(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let n = data.r_centers.len();
-    let level_colors = ["steelblue", "seagreen", "darkorange", "crimson"];
-
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(ref tags) = data.level_tags {
-        // Per-level bands and lines
-        let max_level = *tags.iter().max().unwrap_or(&0);
-        for level in 0..=max_level {
-            let color = level_colors[level % level_colors.len()];
-            let indices: Vec<usize> = (0..n).filter(|&i| tags[i] == level).collect();
-            if indices.is_empty() {
-                continue;
-            }
-            let r_l: Vec<f64> = indices.iter().map(|&i| data.r_centers[i]).collect();
-            let lo: Vec<f64> = indices
-                .iter()
-                .map(|&i| data.mean_xi[i] - data.std_xi[i])
-                .collect();
-            let hi: Vec<f64> = indices
-                .iter()
-                .map(|&i| data.mean_xi[i] + data.std_xi[i])
-                .collect();
-            let xi_l: Vec<f64> = indices.iter().map(|&i| data.mean_xi[i]).collect();
-            plots.push(Plot::Band(
-                BandPlot::new(r_l.clone(), lo, hi)
-                    .with_color(color)
-                    .with_opacity(0.15),
-            ));
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(r_l.iter().copied().zip(xi_l.iter().copied()))
-                    .with_color(color)
-                    .with_stroke_width(2.0)
-                    .with_legend(&format!("Level {}", level)),
-            ));
-        }
-    } else {
-        let lower: Vec<f64> = (0..n).map(|i| data.mean_xi[i] - data.std_xi[i]).collect();
-        let upper: Vec<f64> = (0..n).map(|i| data.mean_xi[i] + data.std_xi[i]).collect();
-        plots.push(Plot::Band(
-            BandPlot::new(data.r_centers.clone(), lower, upper)
-                .with_color("steelblue")
-                .with_opacity(0.2),
-        ));
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(
-                    data.r_centers
-                        .iter()
-                        .copied()
-                        .zip(data.mean_xi.iter().copied()),
-                )
-                .with_color("steelblue")
-                .with_stroke_width(2.0)
-                .with_legend("kNN LS mean +/- 1sigma"),
-        ));
-    }
-
-    let analytic = LinePlot::new()
-        .with_data(
-            data.r_smooth
-                .iter()
-                .copied()
-                .zip(data.xi_smooth.iter().copied()),
-        )
-        .with_color("black")
-        .with_stroke_width(1.5)
-        .with_dashed()
-        .with_legend("Analytic xi(r)");
-
-    let ell_ref = ReferenceLine::vertical(data.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    plots.push(Plot::Line(analytic));
-
-    // Overlay Corrfunc as error bars at bin centers
-    if let (Some(cf_mean), Some(cf_std)) = (&data.corrfunc_mean_xi, &data.corrfunc_std_xi) {
-        let pts: Vec<(f64, f64)> = data
-            .r_centers
-            .iter()
-            .copied()
-            .zip(cf_mean.iter().copied())
-            .collect();
-        plots.push(Plot::Scatter(
-            ScatterPlot::new()
-                .with_data(pts)
-                .with_y_err(cf_std.iter().copied())
-                .with_color("crimson")
-                .with_size(4.0)
-                .with_legend("Corrfunc +/- 1sigma"),
-        ));
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("CoxMock: xi(r) Recovery")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_reference_line(ell_ref);
-
-    (plots, layout)
-}
-
-fn build_residuals(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let pts: Vec<(f64, f64)> = data
-        .r_centers
-        .iter()
-        .copied()
-        .zip(data.bias_sigma.iter().copied())
-        .collect();
-
-    let scatter = ScatterPlot::new()
-        .with_data(pts)
-        .with_color("steelblue")
-        .with_size(4.5)
-        .with_legend("(xi_mean - xi_true) / sigma_mean");
-
-    let zero = ReferenceLine::horizontal(0.0)
-        .with_color("black")
-        .with_stroke_width(1.0)
-        .with_dasharray("4 3");
-    let plus2 = ReferenceLine::horizontal(2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("+2sigma");
-    let minus2 = ReferenceLine::horizontal(-2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("-2sigma");
-
-    let plots = vec![Plot::Scatter(scatter)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Estimator Bias")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("bias / sigma_mean")
-        .with_reference_line(zero)
-        .with_reference_line(plus2)
-        .with_reference_line(minus2);
-
-    (plots, layout)
-}
-
-fn build_r2xi(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let n = data.r_centers.len();
-    let level_colors = ["steelblue", "seagreen", "darkorange", "crimson"];
-
-    let r2xi_analytic: Vec<f64> = data
-        .r_smooth
-        .iter()
-        .zip(data.xi_smooth.iter())
-        .map(|(&r, &xi)| r * r * xi)
-        .collect();
-
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(ref tags) = data.level_tags {
-        let max_level = *tags.iter().max().unwrap_or(&0);
-        for level in 0..=max_level {
-            let color = level_colors[level % level_colors.len()];
-            let indices: Vec<usize> = (0..n).filter(|&i| tags[i] == level).collect();
-            if indices.is_empty() {
-                continue;
-            }
-            let r_l: Vec<f64> = indices.iter().map(|&i| data.r_centers[i]).collect();
-            let lo: Vec<f64> = indices
-                .iter()
-                .map(|&i| data.r_centers[i].powi(2) * (data.mean_xi[i] - data.std_xi[i]))
-                .collect();
-            let hi: Vec<f64> = indices
-                .iter()
-                .map(|&i| data.r_centers[i].powi(2) * (data.mean_xi[i] + data.std_xi[i]))
-                .collect();
-            let r2xi_l: Vec<f64> = indices
-                .iter()
-                .map(|&i| data.r_centers[i].powi(2) * data.mean_xi[i])
-                .collect();
-            plots.push(Plot::Band(
-                BandPlot::new(r_l.clone(), lo, hi)
-                    .with_color(color)
-                    .with_opacity(0.15),
-            ));
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(r_l.iter().copied().zip(r2xi_l.iter().copied()))
-                    .with_color(color)
-                    .with_stroke_width(2.0)
-                    .with_legend(&format!("Level {}", level)),
-            ));
-        }
-    } else {
-        let r2xi_mean: Vec<f64> = (0..n)
-            .map(|i| data.r_centers[i].powi(2) * data.mean_xi[i])
-            .collect();
-        let r2xi_lower: Vec<f64> = (0..n)
-            .map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] - data.std_xi[i]))
-            .collect();
-        let r2xi_upper: Vec<f64> = (0..n)
-            .map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] + data.std_xi[i]))
-            .collect();
-        plots.push(Plot::Band(
-            BandPlot::new(data.r_centers.clone(), r2xi_lower, r2xi_upper)
-                .with_color("steelblue")
-                .with_opacity(0.2),
-        ));
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(
-                    data.r_centers
-                        .iter()
-                        .copied()
-                        .zip(r2xi_mean.iter().copied()),
-                )
-                .with_color("steelblue")
-                .with_stroke_width(2.0)
-                .with_legend("kNN LS"),
-        ));
-    }
-
-    let analytic = LinePlot::new()
-        .with_data(
-            data.r_smooth
-                .iter()
-                .copied()
-                .zip(r2xi_analytic.iter().copied()),
-        )
-        .with_color("black")
-        .with_stroke_width(1.5)
-        .with_dashed()
-        .with_legend("Analytic");
-
-    let ell_ref = ReferenceLine::vertical(data.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    plots.push(Plot::Line(analytic));
-
-    // Overlay Corrfunc r²ξ as error bars
-    if let (Some(cf_mean), Some(cf_std)) = (&data.corrfunc_mean_xi, &data.corrfunc_std_xi) {
-        let r2cf_mean: Vec<f64> = (0..n)
-            .map(|i| data.r_centers[i].powi(2) * cf_mean[i])
-            .collect();
-        let r2cf_err: Vec<f64> = (0..n)
-            .map(|i| data.r_centers[i].powi(2) * cf_std[i])
-            .collect();
-        let pts: Vec<(f64, f64)> = data
-            .r_centers
-            .iter()
-            .copied()
-            .zip(r2cf_mean.iter().copied())
-            .collect();
-        plots.push(Plot::Scatter(
-            ScatterPlot::new()
-                .with_data(pts)
-                .with_y_err(r2cf_err.iter().copied())
-                .with_color("crimson")
-                .with_size(4.0)
-                .with_legend("Corrfunc"),
-        ));
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("CoxMock: r^2 xi(r)")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("r^2 xi(r)  [h^-2 Mpc^2]")
-        .with_reference_line(ell_ref);
-
-    (plots, layout)
-}
-
-fn build_cdf_comparison(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let colors = ["steelblue", "crimson", "seagreen", "darkorange"];
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(ref cdf) = data.cdf_rr_summary {
-        for (idx, &k) in cdf.k_values.iter().enumerate() {
-            let color = colors[idx % colors.len()];
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(
-                        cdf.r_values
-                            .iter()
-                            .copied()
-                            .zip(cdf.cdf_mean[idx].iter().copied()),
-                    )
-                    .with_color(color)
-                    .with_stroke_width(2.0)
-                    .with_legend(&format!("k={} measured", k)),
-            ));
-            let erlang: Vec<f64> = cdf
-                .r_values
-                .iter()
-                .map(|&r| erlang_cdf(k, r, data.cdf_nbar))
-                .collect();
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(cdf.r_values.iter().copied().zip(erlang.iter().copied()))
-                    .with_color("black")
-                    .with_stroke_width(1.0)
-                    .with_dashed(),
-            ));
-        }
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("kNN-CDF: Random Catalog vs Erlang")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("CDF_k(r)");
-
-    (plots, layout)
-}
-
-/// Peaked CDF (PDF): numerical dCDF/dr for measured data and analytic Erlang PDF.
-fn build_peaked_cdf(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let colors = ["steelblue", "crimson", "seagreen", "darkorange"];
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(ref cdf) = data.cdf_rr_summary {
-        let r = &cdf.r_values;
-        let nr = r.len();
-
-        for (idx, &k) in cdf.k_values.iter().enumerate() {
-            let color = colors[idx % colors.len()];
-            let measured = &cdf.cdf_mean[idx];
-
-            // Numerical derivative via central differences
-            let mut pdf = vec![0.0; nr];
-            if nr >= 3 {
-                pdf[0] = (measured[1] - measured[0]) / (r[1] - r[0]);
-                for i in 1..nr - 1 {
-                    pdf[i] = (measured[i + 1] - measured[i - 1]) / (r[i + 1] - r[i - 1]);
-                }
-                pdf[nr - 1] = (measured[nr - 1] - measured[nr - 2]) / (r[nr - 1] - r[nr - 2]);
-            }
-
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(r.iter().copied().zip(pdf.iter().copied()))
-                    .with_color(color)
-                    .with_stroke_width(2.0)
-                    .with_legend(&format!("k={} measured", k)),
-            ));
-
-            // Analytic Erlang PDF
-            let analytic: Vec<f64> =
-                r.iter().map(|&ri| erlang_pdf(k, ri, data.cdf_nbar)).collect();
-            plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(r.iter().copied().zip(analytic.iter().copied()))
-                    .with_color("black")
-                    .with_stroke_width(1.0)
-                    .with_dashed(),
-            ));
-        }
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("kNN-PDF: dCDF/dr (peaked CDF)")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("dCDF_k/dr");
-
-    (plots, layout)
-}
-
-fn build_individual_mocks(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let mock_colors = [
-        "#b8d4f0", "#a0c4e8", "#c0d8f4", "#90b4d8", "#a8cce8", "#b0d0f0", "#98bce0", "#c8dcf4",
-        "#88acd0", "#b0c8e8", "#b4d0ec", "#9cc0e4", "#c4d8f0", "#94b8dc", "#a4c8e4", "#acd0ec",
-        "#a0c0e0", "#bcd4f0", "#8cb0d4", "#b4cce8",
-    ];
-
-    let mut plots: Vec<Plot> = Vec::new();
-    for (idx, xi) in data.all_xi.iter().enumerate() {
-        let color = mock_colors[idx % mock_colors.len()];
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(data.r_centers.iter().copied().zip(xi.iter().copied()))
-                .with_color(color)
-                .with_stroke_width(0.7),
-        ));
-    }
-    plots.push(Plot::Line(
-        LinePlot::new()
-            .with_data(
-                data.r_centers
-                    .iter()
-                    .copied()
-                    .zip(data.mean_xi.iter().copied()),
-            )
-            .with_color("steelblue")
-            .with_stroke_width(2.5)
-            .with_legend("Mean"),
-    ));
-    plots.push(Plot::Line(
-        LinePlot::new()
-            .with_data(
-                data.r_smooth
-                    .iter()
-                    .copied()
-                    .zip(data.xi_smooth.iter().copied()),
-            )
-            .with_color("black")
-            .with_stroke_width(2.0)
-            .with_dashed()
-            .with_legend("Analytic"),
-    ));
-
-    let ell_ref = ReferenceLine::vertical(data.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Individual Mock Realizations")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_reference_line(ell_ref);
-
-    (plots, layout)
-}
-
-/// xi_kNN / xi_Corrfunc ratio per bin.
-fn build_xi_ratio(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(cf_mean) = &data.corrfunc_mean_xi {
-        let ratio: Vec<f64> = data
-            .mean_xi
-            .iter()
-            .zip(cf_mean.iter())
-            .map(|(&knn, &cf)| if cf.abs() > 1e-15 { knn / cf } else { 1.0 })
-            .collect();
-        let pts: Vec<(f64, f64)> = data
-            .r_centers
-            .iter()
-            .copied()
-            .zip(ratio.iter().copied())
-            .collect();
-        plots.push(Plot::Scatter(
-            ScatterPlot::new()
-                .with_data(pts)
-                .with_color("steelblue")
-                .with_size(4.5)
-                .with_legend("xi_kNN / xi_Corrfunc"),
-        ));
-    }
-
-    let one = ReferenceLine::horizontal(1.0)
-        .with_color("black")
-        .with_stroke_width(1.0)
-        .with_dasharray("4 3");
-    let plus2p = ReferenceLine::horizontal(1.02)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("+2%");
-    let minus2p = ReferenceLine::horizontal(0.98)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("-2%");
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("xi Ratio: kNN / Corrfunc")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi_kNN / xi_Corrfunc")
-        .with_reference_line(one)
-        .with_reference_line(plus2p)
-        .with_reference_line(minus2p);
-
-    (plots, layout)
-}
-
-/// Wall-clock timing comparison: kNN vs Corrfunc per mock.
-fn build_timing_comparison(data: &PlotData) -> (Vec<Plot>, Layout) {
-    let mut plots: Vec<Plot> = Vec::new();
-
-    if let Some(knn_t) = &data.knn_times {
-        let pts: Vec<(f64, f64)> = knn_t
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| (i as f64, t))
-            .collect();
-        plots.push(Plot::Scatter(
-            ScatterPlot::new()
-                .with_data(pts)
-                .with_color("steelblue")
-                .with_size(5.0)
-                .with_legend("kNN"),
-        ));
-    }
-
-    if let Some(cf_t) = &data.corrfunc_times {
-        let pts: Vec<(f64, f64)> = cf_t
-            .iter()
-            .enumerate()
-            .map(|(i, &t)| (i as f64, t))
-            .collect();
-        plots.push(Plot::Scatter(
-            ScatterPlot::new()
-                .with_data(pts)
-                .with_color("crimson")
-                .with_size(5.0)
-                .with_legend("Corrfunc"),
-        ));
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Wall-Clock Time per Mock")
-        .with_x_label("Mock index")
-        .with_y_label("Time [s]");
-
-    (plots, layout)
-}
-
-// ---------------------------------------------------------------------------
-// SVG rendering (single plot or summary figure)
-// ---------------------------------------------------------------------------
-
-/// Render SVG for a specific plot kind, reading view state from `state.views`.
 fn render_svg_for(
     state: &ExplorerState,
     kind: PlotKind,
     data: &PlotData,
-    width: f64,
-    height: f64,
+    width_cm: f64,
+    height_cm: f64,
 ) -> String {
     if kind == PlotKind::Summary {
-        // 4×2 multi-panel figure using per-plot view state
-        let mut all_plots = Vec::new();
-        let mut all_layouts = Vec::new();
-        for panel in &PlotKind::PANELS {
-            let (plots, mut layout) = build_raw(*panel, data);
-            apply_view(&mut layout, &state.views[panel.index()]);
-            all_plots.push(plots);
-            all_layouts.push(layout);
-        }
-        let scene = Figure::new(4, 2)
-            .with_plots(all_plots)
-            .with_layouts(all_layouts)
-            .with_labels()
-            .with_figure_size(width, height)
-            .render();
-        SvgBackend.render_scene(&scene)
+        let mut panel_configs: [PlotConfig; 8] = std::array::from_fn(|i| {
+            let panel = PlotKind::PANELS[i];
+            config_from_view(&state.views[panel.index()], 8.5, 6.0)
+        });
+        // Each panel gets its own config from the per-plot view state
+        let _ = &mut panel_configs; // suppress unused warning
+        let source = plotting::render_explorer_summary(data, &panel_configs);
+        state.plotter.render(&source)
     } else {
-        let (plots, mut layout) = build_raw(kind, data);
-        layout.width = Some(width);
-        layout.height = Some(height);
-        apply_view(&mut layout, &state.views[kind.index()]);
-        SvgBackend.render_scene(&render_multiple(plots, layout))
+        let config = config_from_view(&state.views[kind.index()], width_cm, height_cm);
+        let source = kind.render_source(data, &config);
+        state.plotter.render(&source)
     }
 }
 
-/// Render the currently selected plot to SVG.
 fn render_svg(state: &ExplorerState, data: &PlotData) -> String {
     let (w, h) = if state.plot_kind == PlotKind::Summary {
-        (1200.0, 900.0)
+        (36.0, 26.0)
     } else {
-        (700.0, 500.0)
+        (18.0, 12.0)
     };
     render_svg_for(state, state.plot_kind, data, w, h)
 }
@@ -853,7 +317,6 @@ fn render_svg(state: &ExplorerState, data: &PlotData) -> String {
 // Status bars
 // ---------------------------------------------------------------------------
 
-/// Format the status bar (2 lines) for the bottom of the terminal.
 fn format_status_bar(state: &ExplorerState, cols: usize) -> String {
     let mut tabs = String::new();
     for kind in &PlotKind::ALL {
@@ -904,7 +367,6 @@ fn format_status_bar(state: &ExplorerState, cols: usize) -> String {
 // Key handling
 // ---------------------------------------------------------------------------
 
-/// Handle a key event, mutating the explorer state.
 fn handle_key(key: KeyEvent, state: &mut ExplorerState, data: &PlotData, output_dir: &str) {
     state.status_message.clear();
     let is_summary = state.plot_kind == PlotKind::Summary;
@@ -919,14 +381,12 @@ fn handle_key(key: KeyEvent, state: &mut ExplorerState, data: &PlotData, output_
         KeyCode::Char('?') => {
             state.show_help = !state.show_help;
         }
-        // Plot selection by number
         KeyCode::Char(c @ '1'..='9') => {
             let idx = (c as usize) - ('1' as usize);
             if idx < PlotKind::ALL.len() {
                 state.plot_kind = PlotKind::ALL[idx];
             }
         }
-        // Next/previous plot
         KeyCode::Char('n') => {
             let idx = (state.plot_kind.index() + 1) % 9;
             state.plot_kind = PlotKind::ALL[idx];
@@ -935,26 +395,22 @@ fn handle_key(key: KeyEvent, state: &mut ExplorerState, data: &PlotData, output_
             let idx = (state.plot_kind.index() + 8) % 9;
             state.plot_kind = PlotKind::ALL[idx];
         }
-        // Toggle log scales (no-op on summary)
         KeyCode::Char('x') if !is_summary => {
             state.view_mut().log_x = !state.view().log_x;
         }
         KeyCode::Char('y') if !is_summary => {
             state.view_mut().log_y = !state.view().log_y;
         }
-        // Zoom in/out (no-op on summary)
         KeyCode::Char('+') | KeyCode::Char('=') if !is_summary => {
             zoom(state, data, 0.8);
         }
         KeyCode::Char('-') if !is_summary => {
             zoom(state, data, 1.25);
         }
-        // Pan (no-op on summary)
         KeyCode::Left if !is_summary => pan(state, data, -0.1, 0.0),
         KeyCode::Right if !is_summary => pan(state, data, 0.1, 0.0),
         KeyCode::Up if !is_summary => pan(state, data, 0.0, 0.1),
         KeyCode::Down if !is_summary => pan(state, data, 0.0, -0.1),
-        // Reset
         KeyCode::Char('r') => {
             if is_summary {
                 state.reset_all_views();
@@ -964,11 +420,9 @@ fn handle_key(key: KeyEvent, state: &mut ExplorerState, data: &PlotData, output_
                 state.status_message = "View reset".to_string();
             }
         }
-        // Save current plot
         KeyCode::Char('s') => {
             state.status_message = save_svg(state, data, output_dir);
         }
-        // Save all plots
         KeyCode::Char('S') => {
             state.status_message = save_all_svgs(state, data, output_dir);
         }
@@ -976,16 +430,14 @@ fn handle_key(key: KeyEvent, state: &mut ExplorerState, data: &PlotData, output_
     }
 }
 
-/// Get the effective axis ranges for the current plot.
 fn effective_ranges(state: &ExplorerState, data: &PlotData) -> ((f64, f64), (f64, f64)) {
-    let (_, layout) = build_raw(state.plot_kind, data);
+    let (default_x, default_y) = state.plot_kind.data_ranges(data);
     let v = state.view();
-    let x = v.x_range.unwrap_or(layout.x_range);
-    let y = v.y_range.unwrap_or(layout.y_range);
+    let x = v.x_range.unwrap_or(default_x);
+    let y = v.y_range.unwrap_or(default_y);
     (x, y)
 }
 
-/// Zoom by scaling both axis ranges around their centers.
 fn zoom(state: &mut ExplorerState, data: &PlotData, factor: f64) {
     let (xr, yr) = effective_ranges(state, data);
 
@@ -999,7 +451,6 @@ fn zoom(state: &mut ExplorerState, data: &PlotData, factor: f64) {
     v.y_range = Some((y_center - y_half, y_center + y_half));
 }
 
-/// Pan the view by a fraction of the current span.
 fn pan(state: &mut ExplorerState, data: &PlotData, dx_frac: f64, dy_frac: f64) {
     let (xr, yr) = effective_ranges(state, data);
 
@@ -1011,12 +462,11 @@ fn pan(state: &mut ExplorerState, data: &PlotData, dx_frac: f64, dy_frac: f64) {
     v.y_range = Some((yr.0 + dy, yr.1 + dy));
 }
 
-/// Save the current view as a publication-quality SVG.
 fn save_svg(state: &ExplorerState, data: &PlotData, output_dir: &str) -> String {
     let (w, h) = if state.plot_kind == PlotKind::Summary {
-        (1200.0, 900.0)
+        (36.0, 26.0)
     } else {
-        (700.0, 500.0)
+        (18.0, 12.0)
     };
     let svg = render_svg_for(state, state.plot_kind, data, w, h);
     let filename = state.plot_kind.filename();
@@ -1027,14 +477,13 @@ fn save_svg(state: &ExplorerState, data: &PlotData, output_dir: &str) -> String 
     }
 }
 
-/// Save all plots with their per-plot view settings.
 fn save_all_svgs(state: &ExplorerState, data: &PlotData, output_dir: &str) -> String {
     let mut saved = 0;
     for kind in &PlotKind::ALL {
         let (w, h) = if *kind == PlotKind::Summary {
-            (1200.0, 900.0)
+            (36.0, 26.0)
         } else {
-            (700.0, 500.0)
+            (18.0, 12.0)
         };
         let svg = render_svg_for(state, *kind, data, w, h);
         let path = format!("{}/{}", output_dir, kind.filename());
@@ -1049,7 +498,6 @@ fn save_all_svgs(state: &ExplorerState, data: &PlotData, output_dir: &str) -> St
 // HTTP server + browser UI
 // ---------------------------------------------------------------------------
 
-/// Pre-rendered frame data shared between main thread and HTTP server thread.
 struct FrameData {
     svg: String,
     status_html: String,
@@ -1058,7 +506,6 @@ struct FrameData {
     quit: bool,
 }
 
-/// Render the current state into shared frame data.
 fn update_frame(state: &ExplorerState, data: &PlotData, frame: &Mutex<FrameData>) {
     let svg = render_svg(state, data);
     let status_html = format_status_bar_html(state);
@@ -1071,7 +518,6 @@ fn update_frame(state: &ExplorerState, data: &PlotData, frame: &Mutex<FrameData>
     f.quit = state.quit;
 }
 
-/// Format the status bar as HTML for the browser.
 fn format_status_bar_html(state: &ExplorerState) -> String {
     let mut tabs = String::new();
     for kind in &PlotKind::ALL {
@@ -1124,7 +570,6 @@ fn format_status_bar_html(state: &ExplorerState) -> String {
     )
 }
 
-/// Escape a string for embedding in a JSON string value.
 fn escape_json(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + s.len() / 8);
     for c in s.chars() {
@@ -1146,7 +591,6 @@ fn escape_json(s: &str) -> String {
     out
 }
 
-/// Map a browser `KeyboardEvent.key` string to a crossterm `KeyEvent`.
 fn parse_browser_key(key: &str) -> Option<KeyEvent> {
     let code = match key {
         "ArrowLeft" => KeyCode::Left,
@@ -1163,7 +607,6 @@ fn parse_browser_key(key: &str) -> Option<KeyEvent> {
     Some(KeyEvent::new(code, KeyModifiers::empty()))
 }
 
-/// Handle a single HTTP request on a TCP stream.
 fn handle_http(
     mut stream: std::net::TcpStream,
     frame: &Mutex<FrameData>,
@@ -1237,7 +680,6 @@ fn handle_http(
     }
 }
 
-/// Static HTML page served to the browser.
 const EXPLORER_HTML: &str = r##"<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
@@ -1339,18 +781,13 @@ const EXPLORER_HTML: &str = r##"<!DOCTYPE html>
 </html>"##;
 
 /// Main entry point: run the interactive plot explorer.
-///
-/// Starts a tiny HTTP server on localhost, opens the browser, and enters
-/// an event loop that accepts keys from both the terminal and the browser.
 pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
     let mut state = ExplorerState::new();
     let mut stdout = std::io::stdout();
 
-    // Bind to a random available port
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
 
-    // Shared frame data (read by HTTP thread, written by main thread)
     let frame = Arc::new(Mutex::new(FrameData {
         svg: String::new(),
         status_html: String::new(),
@@ -1359,13 +796,10 @@ pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
         quit: false,
     }));
 
-    // Channel: browser key events → main thread
     let (key_tx, key_rx) = mpsc::channel::<String>();
 
-    // Initial render
     update_frame(&state, data, &frame);
 
-    // Spawn HTTP server thread
     let frame_http = Arc::clone(&frame);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -1373,13 +807,11 @@ pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
         }
     });
 
-    // Open browser
     Command::new("open")
         .arg(format!("http://127.0.0.1:{}", port))
         .spawn()
         .ok();
 
-    // Terminal raw mode for keypress capture
     terminal::enable_raw_mode()?;
     let cols = terminal::size().map(|(c, _)| c as usize).unwrap_or(80);
     write!(
@@ -1391,7 +823,6 @@ pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
     stdout.flush()?;
 
     loop {
-        // Poll terminal events with short timeout so we can also drain browser keys
         if crossterm::event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 handle_key(key, &mut state, data, output_dir);
@@ -1404,7 +835,6 @@ pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
             }
         }
 
-        // Drain browser key events
         let mut changed = false;
         while let Ok(key_str) = key_rx.try_recv() {
             if let Some(key) = parse_browser_key(&key_str) {
@@ -1422,10 +852,8 @@ pub fn run_explorer(data: &PlotData, output_dir: &str) -> std::io::Result<()> {
         }
     }
 
-    // Signal quit to any polling browser
     frame.lock().unwrap().quit = true;
 
-    // Restore terminal
     terminal::disable_raw_mode()?;
     write!(stdout, "\r\n")?;
     stdout.flush()?;

@@ -16,13 +16,6 @@
 //!   6. validation_summary.svg — combined 2×2 figure for the paper
 
 use clap::Parser;
-use kuva::backend::svg::SvgBackend;
-use kuva::plot::{BandPlot, LinePlot, ScatterPlot};
-use kuva::render::annotations::ReferenceLine;
-use kuva::render::figure::Figure;
-use kuva::render::layout::Layout;
-use kuva::render::plots::Plot;
-use kuva::render::render::render_multiple;
 use std::time::Instant;
 use twopoint::corrfunc::CorrfuncRunner;
 use twopoint::estimator::{
@@ -32,6 +25,7 @@ use twopoint::ladder::{
     average_cdfs, stitch_levels, DilutionLadder, KnnCdfSummary, LevelResult,
 };
 use twopoint::mock::{CoxMock, CoxMockParams};
+use twopoint::plotting::{self, PlotConfig, PlotData, TypstPlotter};
 use twopoint::tree::PointTree;
 
 #[derive(Parser, Debug)]
@@ -114,23 +108,6 @@ struct Args {
     #[cfg(feature = "interactive")]
     #[arg(long)]
     interactive: bool,
-}
-
-/// Erlang CDF for the k-th nearest neighbor at distance r, given n̄.
-///
-/// CDF_k(r) = 1 − exp(−λ) Σ_{j=0}^{k−1} λ^j / j!
-/// where λ = n̄ · (4/3)πr³
-fn erlang_cdf(k: usize, r: f64, nbar: f64) -> f64 {
-    let lambda = nbar * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
-    let mut sum = 0.0;
-    let mut term = 1.0;
-    for j in 0..k {
-        if j > 0 {
-            term *= lambda / j as f64;
-        }
-        sum += term;
-    }
-    1.0 - (-lambda).exp() * sum
 }
 
 /// Remove self-pairs from DD query results.
@@ -827,121 +804,118 @@ fn main() {
     println!("\nWrote {}", tsv_path);
 
     // ========================================================================
-    // PLOTS
+    // Build shared PlotData
+    // ========================================================================
+    let plot_data = PlotData {
+        r_centers: r_centers.clone(),
+        r_smooth: r_smooth.clone(),
+        xi_smooth: xi_smooth.clone(),
+        mean_xi: mean_xi.clone(),
+        std_xi: std_xi.clone(),
+        bias_sigma: bias_sigma.clone(),
+        all_xi: all_xi.clone(),
+        line_length: params.line_length,
+        cdf_rr_summary: cdf_rr_summary.clone(),
+        cdf_nbar,
+        corrfunc_mean_xi: mean_xi_corrfunc.clone(),
+        corrfunc_std_xi: std_xi_corrfunc.clone(),
+        corrfunc_all_xi: if has_corrfunc {
+            Some(all_xi_corrfunc.clone())
+        } else {
+            None
+        },
+        knn_times: if !knn_times.is_empty() {
+            Some(knn_times.clone())
+        } else {
+            None
+        },
+        corrfunc_times: if !corrfunc_times.is_empty() {
+            Some(corrfunc_times.clone())
+        } else {
+            None
+        },
+        level_tags: composite_level_tags.clone(),
+    };
+
+    // ========================================================================
+    // PLOTS (typst + lilaq)
     // ========================================================================
     println!("\nGenerating plots...");
+    let plotter = TypstPlotter::new();
+    let config = PlotConfig::default();
 
-    // --- Plot 1: ξ(r) comparison ---
-    plot_xi_comparison(
-        &args, &params, &r_centers, &mean_xi, &std_xi, &r_smooth, &xi_smooth,
-    );
+    // Wide config for summary
+    let summary_config = PlotConfig {
+        width_cm: 32.0,
+        height_cm: 22.0,
+        ..PlotConfig::default()
+    };
 
-    // --- Plot 2: Residuals ---
-    plot_residuals(&args, &r_centers, &bias_sigma);
+    // 1. ξ(r) comparison
+    let svg = plotter.render(&plotting::render_xi_comparison(&plot_data, &config));
+    let path = format!("{}/xi_vs_analytic.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
 
-    // --- Plot 3: r²ξ(r) ---
-    plot_r2xi(
-        &args, &params, &r_centers, &mean_xi, &std_xi, &r_smooth, &xi_smooth,
-    );
+    // 2. Residuals
+    let svg = plotter.render(&plotting::render_residuals(&plot_data, &config));
+    let path = format!("{}/xi_residuals.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
 
-    // --- Plot 4: kNN-CDF comparison ---
-    if let Some(ref cdf) = cdf_rr_summary {
-        plot_cdf_comparison(&args, cdf, cdf_nbar);
-    }
+    // 3. r²ξ(r)
+    let svg = plotter.render(&plotting::render_r2xi(&plot_data, &config));
+    let path = format!("{}/r2xi_comparison.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
 
-    // --- Plot 5: Individual mocks ---
-    plot_individual_mocks(
-        &args, &params, &r_centers, &all_xi, &mean_xi, &r_smooth, &xi_smooth,
-    );
+    // 4. CDF comparison
+    let svg = plotter.render(&plotting::render_cdf_comparison(&plot_data, &config));
+    let path = format!("{}/cdf_comparison.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
 
-    // --- Plot 6: Combined 2×2 summary figure ---
-    plot_summary_figure(
-        &args,
-        &params,
-        &r_centers,
-        &mean_xi,
-        &std_xi,
-        &bias_sigma,
-        &r_smooth,
-        &xi_smooth,
-        &cdf_rr_summary,
-        cdf_nbar,
-    );
+    // 5. Individual mocks
+    let svg = plotter.render(&plotting::render_individual_mocks(&plot_data, &config));
+    let path = format!("{}/individual_mocks.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
+
+    // 6. Summary 2×2 figure
+    let svg = plotter.render(&plotting::render_summary_figure(&plot_data, &summary_config));
+    let path = format!("{}/validation_summary.svg", args.output_dir);
+    std::fs::write(&path, &svg).unwrap();
+    println!("  Wrote {}", path);
 
     // --- Corrfunc-specific plots ---
     if has_corrfunc {
-        plot_xi_corrfunc_overlay(
-            &args,
-            &params,
-            &r_centers,
-            &mean_xi,
-            &std_xi,
-            mean_xi_corrfunc.as_ref().unwrap(),
-            std_xi_corrfunc.as_ref().unwrap(),
-            &r_smooth,
-            &xi_smooth,
-        );
-        plot_xi_ratio(
-            &args,
-            &r_centers,
-            &mean_xi,
-            mean_xi_corrfunc.as_ref().unwrap(),
-        );
-        plot_timing(&args, &knn_times, &corrfunc_times);
+        let svg = plotter.render(&plotting::render_xi_corrfunc_overlay(&plot_data, &config));
+        let path = format!("{}/xi_corrfunc_overlay.svg", args.output_dir);
+        std::fs::write(&path, &svg).unwrap();
+        println!("  Wrote {}", path);
+
+        let svg = plotter.render(&plotting::render_xi_ratio(&plot_data, &config));
+        let path = format!("{}/xi_ratio.svg", args.output_dir);
+        std::fs::write(&path, &svg).unwrap();
+        println!("  Wrote {}", path);
+
+        let svg = plotter.render(&plotting::render_timing(&plot_data, &config));
+        let path = format!("{}/timing_comparison.svg", args.output_dir);
+        std::fs::write(&path, &svg).unwrap();
+        println!("  Wrote {}", path);
     }
 
     // --- Dilution-specific plots ---
     if args.dilution {
-        if let Some(ref tags) = composite_level_tags {
-            plot_dilution_levels(
-                &args,
-                &params,
-                &r_centers,
-                &mean_xi,
-                &std_xi,
-                tags,
-                &r_smooth,
-                &xi_smooth,
-            );
-        }
+        let svg = plotter.render(&plotting::render_dilution_levels(&plot_data, &config));
+        let path = format!("{}/dilution_levels.svg", args.output_dir);
+        std::fs::write(&path, &svg).unwrap();
+        println!("  Wrote {}", path);
     }
 
     // Interactive TUI explorer
     #[cfg(feature = "interactive")]
     if args.interactive {
-        use twopoint::explorer::PlotData;
-
-        let plot_data = PlotData {
-            r_centers: r_centers.clone(),
-            r_smooth: r_smooth.clone(),
-            xi_smooth: xi_smooth.clone(),
-            mean_xi: mean_xi.clone(),
-            std_xi: std_xi.clone(),
-            bias_sigma: bias_sigma.clone(),
-            all_xi: all_xi.clone(),
-            line_length: params.line_length,
-            cdf_rr_summary: cdf_rr_summary.clone(),
-            cdf_nbar,
-            corrfunc_mean_xi: mean_xi_corrfunc.clone(),
-            corrfunc_std_xi: std_xi_corrfunc.clone(),
-            corrfunc_all_xi: if has_corrfunc {
-                Some(all_xi_corrfunc.clone())
-            } else {
-                None
-            },
-            knn_times: if !knn_times.is_empty() {
-                Some(knn_times.clone())
-            } else {
-                None
-            },
-            corrfunc_times: if !corrfunc_times.is_empty() {
-                Some(corrfunc_times.clone())
-            } else {
-                None
-            },
-            level_tags: composite_level_tags.clone(),
-        };
-
         if let Err(e) = twopoint::explorer::run_explorer(&plot_data, &args.output_dir) {
             eprintln!("Explorer error: {}", e);
         }
@@ -977,685 +951,3 @@ fn main() {
     );
     println!("\nDone. SVGs in {}/", args.output_dir);
 }
-
-// ============================================================================
-// Plotting functions
-// ============================================================================
-
-fn plot_xi_comparison(
-    args: &Args,
-    params: &CoxMockParams,
-    r_centers: &[f64],
-    mean_xi: &[f64],
-    std_xi: &[f64],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-) {
-    let n_bins = r_centers.len();
-    let lower: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] - std_xi[i]).collect();
-    let upper: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] + std_xi[i]).collect();
-
-    let band = BandPlot::new(r_centers.to_vec(), lower, upper)
-        .with_color("steelblue")
-        .with_opacity(0.2);
-
-    let mean_line = LinePlot::new()
-        .with_data(r_centers.iter().copied().zip(mean_xi.iter().copied()))
-        .with_color("steelblue")
-        .with_stroke_width(2.0)
-        .with_legend("kNN LS mean +/- 1sigma");
-
-    let analytic = LinePlot::new()
-        .with_data(r_smooth.iter().copied().zip(xi_smooth.iter().copied()))
-        .with_color("black")
-        .with_stroke_width(1.5)
-        .with_dashed()
-        .with_legend("Analytic xi(r)");
-
-    let ell_ref = ReferenceLine::vertical(params.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let plots = vec![Plot::Band(band), Plot::Line(mean_line), Plot::Line(analytic)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("CoxMock: xi(r) Recovery")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_width(700.0)
-        .with_height(500.0)
-        .with_reference_line(ell_ref);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/xi_vs_analytic.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_residuals(args: &Args, r_centers: &[f64], bias_sigma: &[f64]) {
-    let data: Vec<(f64, f64)> = r_centers
-        .iter()
-        .copied()
-        .zip(bias_sigma.iter().copied())
-        .collect();
-
-    let scatter = ScatterPlot::new()
-        .with_data(data)
-        .with_color("steelblue")
-        .with_size(4.5)
-        .with_legend("(xi_mean - xi_true) / sigma_mean");
-
-    let zero = ReferenceLine::horizontal(0.0)
-        .with_color("black")
-        .with_stroke_width(1.0)
-        .with_dasharray("4 3");
-    let plus2 = ReferenceLine::horizontal(2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("+2sigma");
-    let minus2 = ReferenceLine::horizontal(-2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("-2sigma");
-
-    let plots = vec![Plot::Scatter(scatter)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Estimator Bias")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("bias / sigma_mean")
-        .with_width(700.0)
-        .with_height(400.0)
-        .with_reference_line(zero)
-        .with_reference_line(plus2)
-        .with_reference_line(minus2);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/xi_residuals.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_r2xi(
-    args: &Args,
-    params: &CoxMockParams,
-    r_centers: &[f64],
-    mean_xi: &[f64],
-    std_xi: &[f64],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-) {
-    let n_bins = r_centers.len();
-    let r2xi_mean: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * mean_xi[i])
-        .collect();
-    let r2xi_lower: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * (mean_xi[i] - std_xi[i]))
-        .collect();
-    let r2xi_upper: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * (mean_xi[i] + std_xi[i]))
-        .collect();
-    let r2xi_analytic: Vec<f64> = r_smooth
-        .iter()
-        .zip(xi_smooth.iter())
-        .map(|(&r, &xi)| r * r * xi)
-        .collect();
-
-    let band = BandPlot::new(r_centers.to_vec(), r2xi_lower, r2xi_upper)
-        .with_color("steelblue")
-        .with_opacity(0.2);
-    let mean_line = LinePlot::new()
-        .with_data(r_centers.iter().copied().zip(r2xi_mean.iter().copied()))
-        .with_color("steelblue")
-        .with_stroke_width(2.0)
-        .with_legend("kNN LS");
-    let analytic = LinePlot::new()
-        .with_data(r_smooth.iter().copied().zip(r2xi_analytic.iter().copied()))
-        .with_color("black")
-        .with_stroke_width(1.5)
-        .with_dashed()
-        .with_legend("Analytic");
-
-    let ell_ref = ReferenceLine::vertical(params.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let plots = vec![Plot::Band(band), Plot::Line(mean_line), Plot::Line(analytic)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("CoxMock: r^2 xi(r)")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("r^2 xi(r)  [h^-2 Mpc^2]")
-        .with_width(700.0)
-        .with_height(500.0)
-        .with_reference_line(ell_ref);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/r2xi_comparison.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_cdf_comparison(args: &Args, cdf: &KnnCdfSummary, nbar: f64) {
-    let colors = ["steelblue", "crimson", "seagreen", "darkorange"];
-    let mut plots: Vec<Plot> = Vec::new();
-
-    for (idx, &k) in cdf.k_values.iter().enumerate() {
-        let color = colors[idx % colors.len()];
-
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(
-                    cdf.r_values
-                        .iter()
-                        .copied()
-                        .zip(cdf.cdf_mean[idx].iter().copied()),
-                )
-                .with_color(color)
-                .with_stroke_width(2.0)
-                .with_legend(&format!("k={} measured", k)),
-        ));
-
-        let erlang: Vec<f64> = cdf
-            .r_values
-            .iter()
-            .map(|&r| erlang_cdf(k, r, nbar))
-            .collect();
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(cdf.r_values.iter().copied().zip(erlang.iter().copied()))
-                .with_color("black")
-                .with_stroke_width(1.0)
-                .with_dashed(),
-        ));
-    }
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("kNN-CDF: Random Catalog vs Erlang")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("CDF_k(r)")
-        .with_width(700.0)
-        .with_height(500.0);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/cdf_comparison.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_individual_mocks(
-    args: &Args,
-    params: &CoxMockParams,
-    r_centers: &[f64],
-    all_xi: &[Vec<f64>],
-    mean_xi: &[f64],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-) {
-    // Light colors for individual mocks
-    let mock_colors = [
-        "#b8d4f0", "#a0c4e8", "#c0d8f4", "#90b4d8", "#a8cce8",
-        "#b0d0f0", "#98bce0", "#c8dcf4", "#88acd0", "#b0c8e8",
-        "#b4d0ec", "#9cc0e4", "#c4d8f0", "#94b8dc", "#a4c8e4",
-        "#acd0ec", "#a0c0e0", "#bcd4f0", "#8cb0d4", "#b4cce8",
-    ];
-
-    let mut plots: Vec<Plot> = Vec::new();
-    for (idx, xi) in all_xi.iter().enumerate() {
-        let color = mock_colors[idx % mock_colors.len()];
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(r_centers.iter().copied().zip(xi.iter().copied()))
-                .with_color(color)
-                .with_stroke_width(0.7),
-        ));
-    }
-
-    plots.push(Plot::Line(
-        LinePlot::new()
-            .with_data(r_centers.iter().copied().zip(mean_xi.iter().copied()))
-            .with_color("steelblue")
-            .with_stroke_width(2.5)
-            .with_legend("Mean"),
-    ));
-
-    plots.push(Plot::Line(
-        LinePlot::new()
-            .with_data(r_smooth.iter().copied().zip(xi_smooth.iter().copied()))
-            .with_color("black")
-            .with_stroke_width(2.0)
-            .with_dashed()
-            .with_legend("Analytic"),
-    ));
-
-    let ell_ref = ReferenceLine::vertical(params.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Individual Mock Realizations")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_width(700.0)
-        .with_height(500.0)
-        .with_reference_line(ell_ref);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/individual_mocks.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_summary_figure(
-    args: &Args,
-    _params: &CoxMockParams,
-    r_centers: &[f64],
-    mean_xi: &[f64],
-    std_xi: &[f64],
-    bias_sigma: &[f64],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-    cdf_rr_summary: &Option<KnnCdfSummary>,
-    cdf_nbar: f64,
-) {
-    let n_bins = r_centers.len();
-
-    // Panel A: ξ(r) with band
-    let lower: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] - std_xi[i]).collect();
-    let upper: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] + std_xi[i]).collect();
-
-    let pa_plots = vec![
-        Plot::Band(
-            BandPlot::new(r_centers.to_vec(), lower, upper)
-                .with_color("steelblue")
-                .with_opacity(0.2),
-        ),
-        Plot::Line(
-            LinePlot::new()
-                .with_data(r_centers.iter().copied().zip(mean_xi.iter().copied()))
-                .with_color("steelblue")
-                .with_stroke_width(2.0)
-                .with_legend("kNN LS"),
-        ),
-        Plot::Line(
-            LinePlot::new()
-                .with_data(r_smooth.iter().copied().zip(xi_smooth.iter().copied()))
-                .with_color("black")
-                .with_stroke_width(1.5)
-                .with_dashed()
-                .with_legend("Analytic"),
-        ),
-    ];
-
-    // Panel B: r²ξ(r)
-    let r2xi_mean: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * mean_xi[i])
-        .collect();
-    let r2xi_lower: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * (mean_xi[i] - std_xi[i]))
-        .collect();
-    let r2xi_upper: Vec<f64> = (0..n_bins)
-        .map(|i| r_centers[i].powi(2) * (mean_xi[i] + std_xi[i]))
-        .collect();
-    let r2xi_analytic: Vec<f64> = r_smooth
-        .iter()
-        .zip(xi_smooth.iter())
-        .map(|(&r, &xi)| r * r * xi)
-        .collect();
-
-    let pb_plots = vec![
-        Plot::Band(
-            BandPlot::new(r_centers.to_vec(), r2xi_lower, r2xi_upper)
-                .with_color("steelblue")
-                .with_opacity(0.2),
-        ),
-        Plot::Line(
-            LinePlot::new()
-                .with_data(r_centers.iter().copied().zip(r2xi_mean.iter().copied()))
-                .with_color("steelblue")
-                .with_stroke_width(2.0),
-        ),
-        Plot::Line(
-            LinePlot::new()
-                .with_data(r_smooth.iter().copied().zip(r2xi_analytic.iter().copied()))
-                .with_color("black")
-                .with_stroke_width(1.5)
-                .with_dashed(),
-        ),
-    ];
-
-    // Panel C: residuals
-    let resid_data: Vec<(f64, f64)> = r_centers
-        .iter()
-        .copied()
-        .zip(bias_sigma.iter().copied())
-        .collect();
-    let pc_plots = vec![Plot::Scatter(
-        ScatterPlot::new()
-            .with_data(resid_data)
-            .with_color("steelblue")
-            .with_size(3.5),
-    )];
-
-    // Panel D: CDF comparison
-    let mut pd_plots: Vec<Plot> = Vec::new();
-    if let Some(ref cdf) = cdf_rr_summary {
-        let colors = ["steelblue", "crimson", "seagreen", "darkorange"];
-        for (idx, &k) in cdf.k_values.iter().enumerate() {
-            let color = colors[idx % colors.len()];
-            pd_plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(
-                        cdf.r_values
-                            .iter()
-                            .copied()
-                            .zip(cdf.cdf_mean[idx].iter().copied()),
-                    )
-                    .with_color(color)
-                    .with_stroke_width(1.5)
-                    .with_legend(&format!("k={}", k)),
-            ));
-            let erlang: Vec<f64> = cdf
-                .r_values
-                .iter()
-                .map(|&r| erlang_cdf(k, r, cdf_nbar))
-                .collect();
-            pd_plots.push(Plot::Line(
-                LinePlot::new()
-                    .with_data(cdf.r_values.iter().copied().zip(erlang.iter().copied()))
-                    .with_color("black")
-                    .with_stroke_width(0.8)
-                    .with_dashed(),
-            ));
-        }
-    }
-
-    let zero_ref = ReferenceLine::horizontal(0.0)
-        .with_color("black")
-        .with_stroke_width(0.8)
-        .with_dasharray("4 3");
-    let plus2_ref = ReferenceLine::horizontal(2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.6)
-        .with_dasharray("6 4");
-    let minus2_ref = ReferenceLine::horizontal(-2.0)
-        .with_color("crimson")
-        .with_stroke_width(0.6)
-        .with_dasharray("6 4");
-
-    let all_plots = vec![pa_plots, pb_plots, pc_plots, pd_plots];
-
-    let layouts = vec![
-        Layout::auto_from_plots(&all_plots[0])
-            .with_title("xi(r)")
-            .with_x_label("r  [h^-1 Mpc]")
-            .with_y_label("xi(r)"),
-        Layout::auto_from_plots(&all_plots[1])
-            .with_title("r^2 xi(r)")
-            .with_x_label("r  [h^-1 Mpc]")
-            .with_y_label("r^2 xi(r)"),
-        Layout::auto_from_plots(&all_plots[2])
-            .with_title("Bias / sigma_mean")
-            .with_x_label("r  [h^-1 Mpc]")
-            .with_y_label("(xi - xi_true) / sigma")
-            .with_reference_line(zero_ref)
-            .with_reference_line(plus2_ref)
-            .with_reference_line(minus2_ref),
-        Layout::auto_from_plots(&all_plots[3])
-            .with_title("kNN-CDF vs Erlang (RR)")
-            .with_x_label("r  [h^-1 Mpc]")
-            .with_y_label("CDF_k(r)"),
-    ];
-
-    let scene = Figure::new(2, 2)
-        .with_plots(all_plots)
-        .with_layouts(layouts)
-        .with_labels()
-        .with_shared_legend()
-        .with_cell_size(480.0, 380.0)
-        .with_title("CoxMock Validation: kNN Landy-Szalay Estimator")
-        .render();
-
-    let svg = SvgBackend.render_scene(&scene);
-    let path = format!("{}/validation_summary.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_xi_corrfunc_overlay(
-    args: &Args,
-    params: &CoxMockParams,
-    r_centers: &[f64],
-    mean_xi: &[f64],
-    std_xi: &[f64],
-    mean_xi_cf: &[f64],
-    std_xi_cf: &[f64],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-) {
-    let n_bins = r_centers.len();
-    let lower: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] - std_xi[i]).collect();
-    let upper: Vec<f64> = (0..n_bins).map(|i| mean_xi[i] + std_xi[i]).collect();
-
-    let band = BandPlot::new(r_centers.to_vec(), lower, upper)
-        .with_color("steelblue")
-        .with_opacity(0.2);
-    let mean_line = LinePlot::new()
-        .with_data(r_centers.iter().copied().zip(mean_xi.iter().copied()))
-        .with_color("steelblue")
-        .with_stroke_width(2.0)
-        .with_legend("kNN LS +/- 1sigma");
-
-    let cf_pts: Vec<(f64, f64)> = r_centers
-        .iter()
-        .copied()
-        .zip(mean_xi_cf.iter().copied())
-        .collect();
-    let cf_scatter = ScatterPlot::new()
-        .with_data(cf_pts)
-        .with_y_err(std_xi_cf.iter().copied())
-        .with_color("crimson")
-        .with_size(4.0)
-        .with_legend("Corrfunc +/- 1sigma");
-
-    let analytic = LinePlot::new()
-        .with_data(r_smooth.iter().copied().zip(xi_smooth.iter().copied()))
-        .with_color("black")
-        .with_stroke_width(1.5)
-        .with_dashed()
-        .with_legend("Analytic xi(r)");
-
-    let ell_ref = ReferenceLine::vertical(params.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let plots = vec![
-        Plot::Band(band),
-        Plot::Line(mean_line),
-        Plot::Scatter(cf_scatter),
-        Plot::Line(analytic),
-    ];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("xi(r): kNN vs Corrfunc")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_width(700.0)
-        .with_height(500.0)
-        .with_reference_line(ell_ref);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/xi_corrfunc_overlay.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_xi_ratio(args: &Args, r_centers: &[f64], mean_xi: &[f64], mean_xi_cf: &[f64]) {
-    let ratio: Vec<f64> = mean_xi
-        .iter()
-        .zip(mean_xi_cf.iter())
-        .map(|(&knn, &cf)| if cf.abs() > 1e-15 { knn / cf } else { 1.0 })
-        .collect();
-    let data: Vec<(f64, f64)> = r_centers
-        .iter()
-        .copied()
-        .zip(ratio.iter().copied())
-        .collect();
-
-    let scatter = ScatterPlot::new()
-        .with_data(data)
-        .with_color("steelblue")
-        .with_size(4.5)
-        .with_legend("xi_kNN / xi_Corrfunc");
-
-    let one = ReferenceLine::horizontal(1.0)
-        .with_color("black")
-        .with_stroke_width(1.0)
-        .with_dasharray("4 3");
-    let plus2p = ReferenceLine::horizontal(1.02)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("+2%");
-    let minus2p = ReferenceLine::horizontal(0.98)
-        .with_color("crimson")
-        .with_stroke_width(0.7)
-        .with_dasharray("6 4")
-        .with_label("-2%");
-
-    let plots = vec![Plot::Scatter(scatter)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("xi Ratio: kNN / Corrfunc")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi_kNN / xi_Corrfunc")
-        .with_width(700.0)
-        .with_height(400.0)
-        .with_reference_line(one)
-        .with_reference_line(plus2p)
-        .with_reference_line(minus2p);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/xi_ratio.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_timing(args: &Args, knn_times: &[f64], corrfunc_times: &[f64]) {
-    let knn_pts: Vec<(f64, f64)> = knn_times
-        .iter()
-        .enumerate()
-        .map(|(i, &t)| (i as f64, t))
-        .collect();
-    let cf_pts: Vec<(f64, f64)> = corrfunc_times
-        .iter()
-        .enumerate()
-        .map(|(i, &t)| (i as f64, t))
-        .collect();
-
-    let knn_scatter = ScatterPlot::new()
-        .with_data(knn_pts)
-        .with_color("steelblue")
-        .with_size(5.0)
-        .with_legend("kNN");
-    let cf_scatter = ScatterPlot::new()
-        .with_data(cf_pts)
-        .with_color("crimson")
-        .with_size(5.0)
-        .with_legend("Corrfunc");
-
-    let plots = vec![Plot::Scatter(knn_scatter), Plot::Scatter(cf_scatter)];
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Wall-Clock Time per Mock")
-        .with_x_label("Mock index")
-        .with_y_label("Time [s]")
-        .with_width(700.0)
-        .with_height(400.0);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/timing_comparison.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-
-fn plot_dilution_levels(
-    args: &Args,
-    params: &CoxMockParams,
-    r_centers: &[f64],
-    mean_xi: &[f64],
-    std_xi: &[f64],
-    level_tags: &[usize],
-    r_smooth: &[f64],
-    xi_smooth: &[f64],
-) {
-    let level_colors = ["steelblue", "seagreen", "darkorange", "crimson"];
-    let max_level = *level_tags.iter().max().unwrap_or(&0);
-
-    let mut plots: Vec<Plot> = Vec::new();
-
-    // Per-level bands and lines
-    for level in 0..=max_level {
-        let color = level_colors[level % level_colors.len()];
-        let indices: Vec<usize> = (0..r_centers.len())
-            .filter(|&i| level_tags[i] == level)
-            .collect();
-
-        if indices.is_empty() {
-            continue;
-        }
-
-        let r_level: Vec<f64> = indices.iter().map(|&i| r_centers[i]).collect();
-        let xi_level: Vec<f64> = indices.iter().map(|&i| mean_xi[i]).collect();
-        let lower: Vec<f64> = indices
-            .iter()
-            .map(|&i| mean_xi[i] - std_xi[i])
-            .collect();
-        let upper: Vec<f64> = indices
-            .iter()
-            .map(|&i| mean_xi[i] + std_xi[i])
-            .collect();
-
-        plots.push(Plot::Band(
-            BandPlot::new(r_level.clone(), lower, upper)
-                .with_color(color)
-                .with_opacity(0.15),
-        ));
-        plots.push(Plot::Line(
-            LinePlot::new()
-                .with_data(r_level.iter().copied().zip(xi_level.iter().copied()))
-                .with_color(color)
-                .with_stroke_width(2.0)
-                .with_legend(&format!("Level {}", level)),
-        ));
-    }
-
-    // Analytic curve
-    plots.push(Plot::Line(
-        LinePlot::new()
-            .with_data(r_smooth.iter().copied().zip(xi_smooth.iter().copied()))
-            .with_color("black")
-            .with_stroke_width(1.5)
-            .with_dashed()
-            .with_legend("Analytic"),
-    ));
-
-    let ell_ref = ReferenceLine::vertical(params.line_length)
-        .with_color("#888888")
-        .with_label("r = l")
-        .with_stroke_width(0.8);
-
-    let layout = Layout::auto_from_plots(&plots)
-        .with_title("Dilution Ladder: Per-Level xi(r)")
-        .with_x_label("r  [h^-1 Mpc]")
-        .with_y_label("xi(r)")
-        .with_width(800.0)
-        .with_height(500.0)
-        .with_reference_line(ell_ref);
-
-    let svg = SvgBackend.render_scene(&render_multiple(plots, layout));
-    let path = format!("{}/dilution_levels.svg", args.output_dir);
-    std::fs::write(&path, svg).unwrap();
-    println!("  Wrote {}", path);
-}
-

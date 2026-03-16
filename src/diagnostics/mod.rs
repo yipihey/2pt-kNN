@@ -61,6 +61,39 @@ impl KnnResiduals {
     }
 }
 
+/// Erlang CDF for the k-th nearest neighbor at distance r, given number density.
+///
+/// CDF_k(r) = 1 − exp(−λ) Σ_{j=0}^{k−1} λ^j / j!
+/// where λ = n̄ · (4/3)πr³
+pub fn erlang_cdf(k: usize, r: f64, nbar: f64) -> f64 {
+    let lambda = nbar * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+    let mut sum = 0.0;
+    let mut term = 1.0;
+    for j in 0..k {
+        if j > 0 {
+            term *= lambda / j as f64;
+        }
+        sum += term;
+    }
+    1.0 - (-lambda).exp() * sum
+}
+
+/// Erlang PDF (derivative of CDF w.r.t. r) for the k-th nearest neighbor.
+///
+/// f_k(r) = n̄ · 4π r² · exp(−λ) · λ^(k−1) / (k−1)!
+/// where λ = n̄ · (4π/3) · r³.
+pub fn erlang_pdf(k: usize, r: f64, nbar: f64) -> f64 {
+    let lambda = nbar * 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+    let dlambda_dr = nbar * 4.0 * std::f64::consts::PI * r.powi(2);
+    if k == 0 || r <= 0.0 {
+        return 0.0;
+    }
+    // log(λ^(k-1) / (k-1)!) = (k-1)*ln(λ) - ln((k-1)!)
+    let log_term = (k as f64 - 1.0) * lambda.ln()
+        - (1..k).map(|j| (j as f64).ln()).sum::<f64>();
+    dlambda_dr * (-lambda + log_term).exp()
+}
+
 // TODO: Implement
 // - Poisson|ξ CDF prediction from generating function
 // - Excess variance extraction via δ⟨N^(2)⟩ = 2 Σ_{k≥2} (k-1) Δ_k

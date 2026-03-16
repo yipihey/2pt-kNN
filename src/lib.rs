@@ -31,7 +31,7 @@ pub mod plotting;
 pub mod gpu;
 #[cfg(feature = "wasm")]
 pub mod wasm;
-#[cfg(feature = "interactive")]
+#[cfg(all(feature = "interactive", feature = "typst-plots"))]
 pub mod explorer;
 
 /// Re-export core types at crate root

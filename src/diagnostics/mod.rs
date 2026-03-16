@@ -29,9 +29,40 @@ pub struct AlphaSn {
     pub alpha: Vec<f64>,
 }
 
+use crate::ladder::KnnCdfSummary;
+
+impl KnnResiduals {
+    /// Compute residuals Δ_k(r) = CDF_measured - CDF_predicted for each k.
+    ///
+    /// `predict` takes (k, r) and returns the predicted CDF value.
+    pub fn from_cdfs<F>(cdf_dd: &KnnCdfSummary, predict: F) -> Self
+    where
+        F: Fn(usize, f64) -> f64,
+    {
+        let delta_k: Vec<Vec<f64>> = cdf_dd
+            .k_values
+            .iter()
+            .enumerate()
+            .map(|(ki, &k)| {
+                cdf_dd
+                    .r_values
+                    .iter()
+                    .enumerate()
+                    .map(|(ri, &r)| cdf_dd.cdf_mean[ki][ri] - predict(k, r))
+                    .collect()
+            })
+            .collect();
+
+        KnnResiduals {
+            r0: cdf_dd.r_values.clone(),
+            delta_k,
+            k_max: *cdf_dd.k_values.last().unwrap_or(&0),
+        }
+    }
+}
+
 // TODO: Implement
 // - Poisson|ξ CDF prediction from generating function
-// - Residual computation
 // - Excess variance extraction via δ⟨N^(2)⟩ = 2 Σ_{k≥2} (k-1) Δ_k
 // - σ²_NL from Var[N(<R)] across query points
 // - σ²_{1/V}[k] for Press–Schechter σ(M)

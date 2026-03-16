@@ -43,3 +43,7 @@ plots/*.svg
 plots/*.png
 plots/*.pdf
 plots/*.tsv
+
+# Corrfunc cache
+.corrfunc_cache/
+__pycache__/

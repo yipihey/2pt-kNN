@@ -1,15 +1,19 @@
 //! KD-tree abstraction over bosque.
 //!
 //! We wrap bosque's in-place KD-tree to provide kNN queries returning
-//! (distance, index) pairs sorted by distance. The trait `KnnTree` allows
-//! swapping backends if needed.
+//! (distance, index) pairs sorted by distance. All heavy lifting is
+//! delegated to bosque's tree-accelerated queries.
+//!
+//! Bosque (with default `sqrt-dist` feature) returns Euclidean distances,
+//! not squared distances. Our `Neighbor::dist` field stores the actual
+//! Euclidean distance.
 
 use std::fmt;
 
-/// Result of a kNN query: squared distance and original index.
+/// Result of a kNN query: Euclidean distance and original index.
 #[derive(Debug, Clone, Copy)]
 pub struct Neighbor {
-    pub dist_sq: f64,
+    pub dist: f64,
     pub index: usize,
 }
 
@@ -39,54 +43,17 @@ impl PointTree {
     /// Build a KD-tree from a set of 3D positions.
     ///
     /// The input is consumed: bosque permutes the array in-place.
-    /// We track the original indices so query results can be mapped back.
+    /// We use `build_tree_with_indices` to track the permutation so
+    /// query results can be mapped back to original insertion order.
     pub fn build(positions: Vec<[f64; 3]>) -> Self {
         let len = positions.len();
+        let mut pos = positions;
+        let mut idxs: Vec<u32> = (0..len as u32).collect();
 
-        // Tag each point with its original index, then separate
-        let tagged: Vec<([f64; 3], usize)> = positions
-            .into_iter()
-            .enumerate()
-            .map(|(i, p)| (p, i))
-            .collect();
+        bosque::tree::build_tree_with_indices(&mut pos, &mut idxs);
 
-        // Extract just the positions for bosque
-        let mut pos: Vec<[f64; 3]> = tagged.iter().map(|(p, _)| *p).collect();
-
-        // Build tree in-place (permutes pos)
-        bosque::tree::build_tree(&mut pos);
-
-        // Reconstruct index map: after build_tree, pos is permuted.
-        // We need to figure out which original point ended up where.
-        // Since bosque permutes in-place, we need to track this.
-        //
-        // Strategy: build a second tagged array, sort it the same way.
-        // Actually, bosque doesn't expose the permutation. We'll use
-        // a workaround: build from (pos, original_idx) pairs.
-        //
-        // For now, we use a simpler approach: store (pos, orig_idx) pairs
-        // and do the sort ourselves. This is a TODO to optimize with
-        // bosque internals if it exposes the permutation.
-
-        // Re-tag: find each permuted position's original index by matching.
-        // This is O(n²) and only acceptable for initial development.
-        // TODO: Use bosque's internal permutation tracking or build
-        // a custom in-place sort that tracks indices.
-        let mut index_map = vec![0usize; len];
-        let mut used = vec![false; len];
-        for (new_idx, new_pos) in pos.iter().enumerate() {
-            for (orig_idx, (orig_pos, _)) in tagged.iter().enumerate() {
-                if !used[orig_idx]
-                    && new_pos[0] == orig_pos[0]
-                    && new_pos[1] == orig_pos[1]
-                    && new_pos[2] == orig_pos[2]
-                {
-                    index_map[new_idx] = orig_idx;
-                    used[orig_idx] = true;
-                    break;
-                }
-            }
-        }
+        // idxs[i] now holds the original index of the point at permuted position i
+        let index_map: Vec<usize> = idxs.into_iter().map(|i| i as usize).collect();
 
         Self {
             positions: pos,
@@ -106,9 +73,9 @@ impl PointTree {
 
     /// Find the single nearest neighbor of `query`.
     pub fn nearest_one(&self, query: &[f64; 3]) -> Neighbor {
-        let (dist_sq, perm_idx) = bosque::tree::nearest_one(&self.positions, query);
+        let (dist, perm_idx) = bosque::tree::nearest_one(&self.positions, query);
         Neighbor {
-            dist_sq,
+            dist,
             index: self.index_map[perm_idx],
         }
     }
@@ -117,39 +84,19 @@ impl PointTree {
     ///
     /// Returns up to `k` neighbors. If the tree has fewer than `k` points,
     /// returns all points.
-    ///
-    /// TODO: This uses repeated single-neighbor queries with exclusion,
-    /// which is O(k · log n) but with high constant factors. Replace with
-    /// a proper k-nearest traversal in bosque when available.
     pub fn nearest_k(&self, query: &[f64; 3], k: usize) -> Vec<Neighbor> {
-        // For the initial implementation, we do a brute-force scan.
-        // This is correct but slow for large datasets. The first optimization
-        // target is to add a proper nearest_k to bosque or use its tree
-        // structure directly.
-        //
-        // For CoxMock validation at N ~ 10^4–10^5, this is acceptable.
         let k = k.min(self.len);
-        let mut dists: Vec<(f64, usize)> = self
-            .positions
-            .iter()
-            .enumerate()
-            .map(|(perm_idx, pos)| {
-                let dx = pos[0] - query[0];
-                let dy = pos[1] - query[1];
-                let dz = pos[2] - query[2];
-                (dx * dx + dy * dy + dz * dz, perm_idx)
-            })
-            .collect();
+        if k == 0 {
+            return Vec::new();
+        }
 
-        // Partial sort to get k smallest
-        dists.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
-        dists.truncate(k);
-        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut results = bosque::tree::nearest_k(&self.positions, query, k);
+        results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        dists
+        results
             .into_iter()
-            .map(|(dist_sq, perm_idx)| Neighbor {
-                dist_sq,
+            .map(|(dist, perm_idx)| Neighbor {
+                dist,
                 index: self.index_map[perm_idx],
             })
             .collect()
@@ -160,32 +107,18 @@ impl PointTree {
     /// Distances wrap around a cubic box of side `box_size`.
     pub fn nearest_k_periodic(&self, query: &[f64; 3], k: usize, box_size: f64) -> Vec<Neighbor> {
         let k = k.min(self.len);
-        let half = box_size * 0.5;
-        let mut dists: Vec<(f64, usize)> = self
-            .positions
-            .iter()
-            .enumerate()
-            .map(|(perm_idx, pos)| {
-                let mut dist_sq = 0.0;
-                for dim in 0..3 {
-                    let mut d = (pos[dim] - query[dim]).abs();
-                    if d > half {
-                        d = box_size - d;
-                    }
-                    dist_sq += d * d;
-                }
-                (dist_sq, perm_idx)
-            })
-            .collect();
+        if k == 0 {
+            return Vec::new();
+        }
 
-        dists.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap());
-        dists.truncate(k);
-        dists.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        let mut results =
+            bosque::tree::nearest_k_periodic(&self.positions, query, k, 0.0, box_size);
+        results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-        dists
+        results
             .into_iter()
-            .map(|(dist_sq, perm_idx)| Neighbor {
-                dist_sq,
+            .map(|(dist, perm_idx)| Neighbor {
+                dist,
                 index: self.index_map[perm_idx],
             })
             .collect()
@@ -207,6 +140,7 @@ mod tests {
         let tree = PointTree::build(pts);
         let n = tree.nearest_one(&[0.01, 0.0, 0.0]);
         assert_eq!(n.index, 0);
+        assert!(n.dist < 0.02);
     }
 
     #[test]
@@ -220,9 +154,28 @@ mod tests {
         let tree = PointTree::build(pts);
         let neighbors = tree.nearest_k(&[0.5, 0.0, 0.0], 2);
         assert_eq!(neighbors.len(), 2);
-        // Nearest should be point 0 or 1
         let indices: Vec<usize> = neighbors.iter().map(|n| n.index).collect();
         assert!(indices.contains(&0));
         assert!(indices.contains(&1));
+        // Check distances are Euclidean (not squared)
+        assert!((neighbors[0].dist - 0.5).abs() < 1e-10);
+        assert!((neighbors[1].dist - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_nearest_k_periodic() {
+        // Point near boundary should find periodic neighbor
+        let pts = vec![
+            [1.0, 5.0, 5.0],
+            [9.0, 5.0, 5.0], // periodic dist to pt0 = 2.0
+            [3.0, 5.0, 5.0], // dist to pt0 = 2.0
+        ];
+        let tree = PointTree::build(pts);
+        let nn = tree.nearest_k_periodic(&[1.0, 5.0, 5.0], 3, 10.0);
+        assert_eq!(nn.len(), 3);
+        assert!(nn[0].dist < 1e-10); // self
+        // Both neighbors at distance 2.0
+        assert!((nn[1].dist - 2.0).abs() < 1e-10);
+        assert!((nn[2].dist - 2.0).abs() < 1e-10);
     }
 }

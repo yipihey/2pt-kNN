@@ -33,6 +33,8 @@ pub struct OverdensityField {
     pub delta: Vec<f64>,
     /// True if cell is valid (n_R > 0 ↔ inside survey footprint).
     pub valid: Vec<bool>,
+    /// Random-catalog weight per cell (for pair weighting).
+    pub w_random: Vec<f64>,
     /// Physical side length of a cell at this level.
     pub cell_size: f64,
     /// Fast lookup: cell Morton index → position in the arrays.
@@ -131,11 +133,13 @@ pub fn compute_overdensity(hist: &CellHistogram, config: &MortonConfig) -> Overd
     let n = hist.cell_indices.len();
     let mut delta = Vec::with_capacity(n);
     let mut valid = Vec::with_capacity(n);
+    let mut w_random = Vec::with_capacity(n);
     let mut cell_map = HashMap::with_capacity(n);
 
     for (i, &ci) in hist.cell_indices.iter().enumerate() {
         cell_map.insert(ci, i);
         let wr = hist.w_random[i];
+        w_random.push(wr);
         if wr > 0.0 {
             delta.push(hist.w_data[i] / (alpha * wr) - 1.0);
             valid.push(true);
@@ -152,6 +156,7 @@ pub fn compute_overdensity(hist: &CellHistogram, config: &MortonConfig) -> Overd
         cell_indices: hist.cell_indices.clone(),
         delta,
         valid,
+        w_random,
         cell_size,
         cell_map,
     }

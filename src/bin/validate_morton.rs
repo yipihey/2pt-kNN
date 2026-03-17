@@ -27,8 +27,8 @@ struct Args {
     #[arg(long, default_value_t = 10)]
     n_mocks: usize,
 
-    /// Maximum octree level
-    #[arg(long, default_value_t = 7)]
+    /// Maximum octree level (0 = auto from particle density)
+    #[arg(long, default_value_t = 0)]
     l_max: u32,
 
     /// Minimum octree level
@@ -97,10 +97,22 @@ fn main() {
         params.box_size = v;
     }
 
+    // Auto l_max: choose finest level with ≥5 data particles per cell.
+    let l_max = if args.l_max == 0 {
+        let auto = xi_morton::MortonXiConfig::auto_l_max(params.box_size, params.n_points, 5.0);
+        println!(
+            "Auto l_max = {} (≥5 data particles/cell at finest level)",
+            auto
+        );
+        auto
+    } else {
+        args.l_max
+    };
+
     println!("=== Morton-Grid ξ Validation ===");
     println!(
         "Preset: {}, N_D={}, box={}, ℓ={}..{}, offsets={}",
-        args.preset, params.n_points, params.box_size, args.l_min, args.l_max, args.n_offsets,
+        args.preset, params.n_points, params.box_size, args.l_min, l_max, args.n_offsets,
     );
     println!();
 
@@ -121,7 +133,7 @@ fn main() {
                 periodic: true,
             },
             l_min: args.l_min,
-            l_max: args.l_max,
+            l_max,
             n_offsets: args.n_offsets,
             seed: 3000 + mock_i as u64,
         };
@@ -158,7 +170,7 @@ fn main() {
             if args.cic {
                 let mc = &xi_config.morton_config;
                 let particles = morton::prepare_particles(&mock.positions, &randoms, mc);
-                let histograms = grid::build_all_levels(&particles, mc, args.l_max);
+                let histograms = grid::build_all_levels(&particles, mc, l_max);
                 let cic_summary = cic::compute_cic_all_levels(&histograms, mc);
 
                 println!("=== Counts-in-Cells Summary ===");
@@ -301,7 +313,7 @@ fn main() {
         let mock0 = CoxMock::generate(&params, 1000);
         let randoms0 = CoxMock::generate_randoms(n_random, params.box_size, 2000);
         let particles = morton::prepare_particles(&mock0.positions, &randoms0, &mc);
-        let histograms = grid::build_all_levels(&particles, &mc, args.l_max);
+        let histograms = grid::build_all_levels(&particles, &mc, l_max);
         let cic_summary = cic::compute_cic_all_levels(&histograms, &mc);
         Some(
             cic_summary

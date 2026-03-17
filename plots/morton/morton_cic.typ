@@ -6,8 +6,8 @@
 #let seagreen = rgb("#2E8B57")
 #let darkorange = rgb("#FF8C00")
 #let level-colors = (steelblue, seagreen, darkorange, crimson)
-#let r-eff = (155.08762272, 77.54381136, 38.77190568, 19.38595284, 9.69297642, 4.84648821, 2.42324411)
-#let vom = (10.77240000, 5.39840000, 3.35015000, 2.28079375, 1.67125445, 1.34455195, 1.13681338)
+#let r-eff = (155.08762272, 77.54381136, 38.77190568)
+#let vom = (10.77240000, 5.39840000, 3.35015000)
 
 #lq.diagram(
   title: [Counts-in-Cells: $"Var" slash N$ vs Scale],

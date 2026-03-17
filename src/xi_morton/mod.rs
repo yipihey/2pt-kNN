@@ -115,6 +115,26 @@ impl MortonXiConfig {
             seed: 42,
         }
     }
+
+    /// Compute the maximum useful octree level given a particle count.
+    ///
+    /// Returns the finest level where the mean number of data particles
+    /// per cell is at least `min_per_cell` (default: 5). Finer levels
+    /// have too few particles per cell for reliable δ estimates.
+    pub fn auto_l_max(_box_size: f64, n_data: usize, min_per_cell: f64) -> u32 {
+        let mut l = 1u32;
+        loop {
+            let n_cells = (1u64 << (3 * (l + 1))) as f64; // (2^(l+1))^3
+            let nbar = n_data as f64 / n_cells;
+            if nbar < min_per_cell {
+                return l;
+            }
+            l += 1;
+            if l >= 20 {
+                return l;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +176,11 @@ pub fn compute_xi_level(field: &OverdensityField, config: &MortonConfig) -> Mort
 }
 
 /// Compute the correlation for a single lag vector.
+///
+/// Weight each cell pair by w_R(i) × w_R(j) so that sparse cells
+/// (with few randoms, hence noisy δ) contribute proportionally to
+/// their statistical significance. This is equivalent to a proper
+/// RR-weighted pair estimator.
 fn correlate_lag(
     field: &OverdensityField,
     dx: i32,
@@ -175,8 +200,9 @@ fn correlate_lag(
         if let Some(nbr_ci) = morton::neighbor_cell(ci, dx, dy, dz, field.level, config.periodic) {
             if let Some(&j) = field.cell_map.get(&nbr_ci) {
                 if field.valid[j] {
-                    num.add(field.delta[i] * field.delta[j]);
-                    denom.add(1.0);
+                    let weight = field.w_random[i] * field.w_random[j];
+                    num.add(weight * field.delta[i] * field.delta[j]);
+                    denom.add(weight);
                     n_pairs += 1;
                 }
             }

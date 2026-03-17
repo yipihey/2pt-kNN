@@ -37,8 +37,12 @@ pub struct OverdensityField {
     pub w_data: Vec<f64>,
     /// Random-catalog weight per cell (for pair weighting).
     pub w_random: Vec<f64>,
-    /// Global normalization α = Σ w_D / Σ w_R.
+    /// Global normalization α = N_D / N_R.
     pub alpha: f64,
+    /// Total data count (integer, for exact LS arithmetic).
+    pub total_wd: f64,
+    /// Total random count (integer, for exact LS arithmetic).
+    pub total_wr: f64,
     /// Physical side length of a cell at this level.
     pub cell_size: f64,
     /// Fast lookup: cell Morton index → position in the arrays.
@@ -166,6 +170,8 @@ pub fn compute_overdensity(hist: &CellHistogram, config: &MortonConfig) -> Overd
         w_data,
         w_random,
         alpha,
+        total_wd,
+        total_wr,
         cell_size,
         cell_map,
     }

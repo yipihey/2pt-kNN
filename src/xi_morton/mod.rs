@@ -123,11 +123,12 @@ impl MortonXiConfig {
     /// estimator works well down to ~0.2 particles/cell (use min_per_cell ≈ 1
     /// for a conservative choice, or ≈ 0.2 to push the resolution limit).
     pub fn auto_l_max(_box_size: f64, n_data: usize, min_per_cell: f64) -> u32 {
+        let threshold = (n_data as f64 / min_per_cell) as u64;
         let mut l = 1u32;
         loop {
-            let n_cells = (1u64 << (3 * (l + 1))) as f64; // (2^(l+1))^3
-            let nbar = n_data as f64 / n_cells;
-            if nbar < min_per_cell {
+            // n_cells at level l+1 = 8^(l+1) — exact integer power of 8.
+            let n_cells_next = 1u64 << (3 * (l + 1));
+            if n_cells_next > threshold {
                 return l;
             }
             l += 1;
@@ -177,11 +178,16 @@ pub fn compute_xi_level(field: &OverdensityField, config: &MortonConfig) -> Mort
 }
 
 /// Compute the correlation for a single lag vector via count-based
-/// Landy-Szalay: ξ = (DD/α² − 2·DR/α + RR) / RR.
+/// Landy-Szalay.
 ///
-/// Working in counts avoids the δ = −1 saturation in empty-data cells:
-/// cells with n_D = 0 contribute zero to DD and DR, so only
-/// well-populated cells drive the signal.
+/// The inner loop accumulates integer-valued products DD, DR, RR
+/// (exact in f64 for unit weights up to 2^53). The final formula
+/// uses total counts N_D, N_R to avoid intermediate α divisions:
+///
+///   ξ = (DD·N_R² − 2·DR·N_D·N_R + RR·N_D²) / (RR·N_D²)
+///
+/// Only one float division at the end; the numerator stays in
+/// integer-scaled arithmetic as long as possible.
 fn correlate_lag(
     field: &OverdensityField,
     dx: i32,
@@ -213,9 +219,12 @@ fn correlate_lag(
     }
 
     let rr_val = rr.value();
-    let alpha = field.alpha;
+    let nd = field.total_wd;
+    let nr = field.total_wr;
     let xi = if rr_val > 0.0 {
-        (dd.value() / (alpha * alpha) - dr.value() / alpha + rr_val) / rr_val
+        let denom = rr_val * nd * nd;
+        // DR is already symmetrized (D_i·R_j + R_i·D_j), so no factor of 2.
+        (dd.value() * nr * nr - dr.value() * nd * nr + rr_val * nd * nd) / denom
     } else {
         0.0
     };

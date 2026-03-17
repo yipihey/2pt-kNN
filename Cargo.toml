@@ -78,6 +78,11 @@ name = "twopoint-validate-tidal"
 path = "src/bin/validate_tidal.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "bench-vs-corrfunc"
+path = "src/bin/bench_vs_corrfunc.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "test_plot"
 required-features = ["typst-plots"]

@@ -46,6 +46,7 @@ plots/*.svg
 plots/*.png
 plots/*.pdf
 plots/*.tsv
+plots/*.typ
 
 # Corrfunc cache
 .corrfunc_cache/

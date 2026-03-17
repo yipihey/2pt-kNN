@@ -40,7 +40,7 @@ struct Args {
     bits: u32,
 
     /// Number of random spatial offsets (0 = none)
-    #[arg(long, default_value_t = 0)]
+    #[arg(long, default_value_t = 8)]
     n_offsets: usize,
 
     /// Random/data ratio for randoms catalog
@@ -97,11 +97,12 @@ fn main() {
         params.box_size = v;
     }
 
-    // Auto l_max: choose finest level with ≥5 data particles per cell.
+    // Auto l_max: choose finest level with ≥1 data particle per cell.
+    // The count-based LS estimator works well down to ~0.3/cell.
     let l_max = if args.l_max == 0 {
-        let auto = xi_morton::MortonXiConfig::auto_l_max(params.box_size, params.n_points, 5.0);
+        let auto = xi_morton::MortonXiConfig::auto_l_max(params.box_size, params.n_points, 1.0);
         println!(
-            "Auto l_max = {} (≥5 data particles/cell at finest level)",
+            "Auto l_max = {} (≥1 data particle/cell at finest level)",
             auto
         );
         auto

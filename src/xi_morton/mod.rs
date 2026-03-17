@@ -111,7 +111,7 @@ impl MortonXiConfig {
             morton_config: MortonConfig::new(box_size, true),
             l_min: 1,
             l_max,
-            n_offsets: 0,
+            n_offsets: 8,
             seed: 42,
         }
     }
@@ -119,8 +119,9 @@ impl MortonXiConfig {
     /// Compute the maximum useful octree level given a particle count.
     ///
     /// Returns the finest level where the mean number of data particles
-    /// per cell is at least `min_per_cell` (default: 5). Finer levels
-    /// have too few particles per cell for reliable δ estimates.
+    /// per cell is at least `min_per_cell`. The count-based Landy-Szalay
+    /// estimator works well down to ~0.2 particles/cell (use min_per_cell ≈ 1
+    /// for a conservative choice, or ≈ 0.2 to push the resolution limit).
     pub fn auto_l_max(_box_size: f64, n_data: usize, min_per_cell: f64) -> u32 {
         let mut l = 1u32;
         loop {
@@ -175,12 +176,12 @@ pub fn compute_xi_level(field: &OverdensityField, config: &MortonConfig) -> Mort
     }
 }
 
-/// Compute the correlation for a single lag vector.
+/// Compute the correlation for a single lag vector via count-based
+/// Landy-Szalay: ξ = (DD/α² − 2·DR/α + RR) / RR.
 ///
-/// Weight each cell pair by w_R(i) × w_R(j) so that sparse cells
-/// (with few randoms, hence noisy δ) contribute proportionally to
-/// their statistical significance. This is equivalent to a proper
-/// RR-weighted pair estimator.
+/// Working in counts avoids the δ = −1 saturation in empty-data cells:
+/// cells with n_D = 0 contribute zero to DD and DR, so only
+/// well-populated cells drive the signal.
 fn correlate_lag(
     field: &OverdensityField,
     dx: i32,
@@ -188,8 +189,9 @@ fn correlate_lag(
     dz: i32,
     config: &MortonConfig,
 ) -> (f64, u64) {
-    let mut num = KahanAccumulator::new();
-    let mut denom = KahanAccumulator::new();
+    let mut dd = KahanAccumulator::new();
+    let mut dr = KahanAccumulator::new();
+    let mut rr = KahanAccumulator::new();
     let mut n_pairs = 0u64;
 
     for (i, &ci) in field.cell_indices.iter().enumerate() {
@@ -200,17 +202,20 @@ fn correlate_lag(
         if let Some(nbr_ci) = morton::neighbor_cell(ci, dx, dy, dz, field.level, config.periodic) {
             if let Some(&j) = field.cell_map.get(&nbr_ci) {
                 if field.valid[j] {
-                    let weight = field.w_random[i] * field.w_random[j];
-                    num.add(weight * field.delta[i] * field.delta[j]);
-                    denom.add(weight);
+                    dd.add(field.w_data[i] * field.w_data[j]);
+                    dr.add(field.w_data[i] * field.w_random[j]
+                         + field.w_random[i] * field.w_data[j]);
+                    rr.add(field.w_random[i] * field.w_random[j]);
                     n_pairs += 1;
                 }
             }
         }
     }
 
-    let xi = if denom.value() > 0.0 {
-        num.value() / denom.value()
+    let rr_val = rr.value();
+    let alpha = field.alpha;
+    let xi = if rr_val > 0.0 {
+        (dd.value() / (alpha * alpha) - dr.value() / alpha + rr_val) / rr_val
     } else {
         0.0
     };

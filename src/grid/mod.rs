@@ -198,6 +198,7 @@ mod tests {
             code: encode_morton_64(ix, iy, iz),
             weight: 1.0,
             catalog: cat,
+            orig_index: 0,
         }
     }
 

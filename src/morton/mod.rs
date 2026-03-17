@@ -11,12 +11,15 @@ pub enum CatalogFlag {
     Random,
 }
 
-/// A particle record: Morton code, weight, and catalog membership.
+/// A particle record: Morton code, weight, catalog membership, and
+/// original index into the source catalog (data or random).
 #[derive(Clone, Copy, Debug)]
 pub struct MortonParticle {
     pub code: u64,
     pub weight: f64,
     pub catalog: CatalogFlag,
+    /// Index into the original data or random position array.
+    pub orig_index: u32,
 }
 
 /// Configuration for Morton encoding.
@@ -320,12 +323,14 @@ pub fn encode_catalog(
 ) -> Vec<MortonParticle> {
     positions
         .iter()
-        .map(|pos| {
+        .enumerate()
+        .map(|(i, pos)| {
             let (ix, iy, iz) = quantize(pos, config);
             MortonParticle {
                 code: encode_morton_64(ix, iy, iz),
                 weight: 1.0,
                 catalog,
+                orig_index: i as u32,
             }
         })
         .collect()

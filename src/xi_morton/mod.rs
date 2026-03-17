@@ -5,6 +5,8 @@
 //! 3 separation bins per level (face, edge, corner). Multi-level
 //! analysis yields logarithmically spaced radial bins.
 
+pub mod cell_pairs;
+
 use crate::grid;
 use crate::grid::OverdensityField;
 use crate::morton::{self, MortonConfig, MortonParticle, NEIGHBOR_LAGS};
@@ -83,8 +85,10 @@ pub struct MortonXiBinned {
 /// Combined multi-resolution ξ̂ result.
 #[derive(Debug, Clone)]
 pub struct MortonXiEstimate {
-    /// Per-level binned results.
+    /// Per-level binned results (grid-based LS).
     pub levels: Vec<MortonXiBinned>,
+    /// Fine-scale ξ from direct pair counting (if hybrid mode used).
+    pub cell_pair_xi: Option<cell_pairs::CellPairXi>,
     /// Merged (r, ξ) sorted by r.
     pub r: Vec<f64>,
     pub xi: Vec<f64>,
@@ -304,7 +308,7 @@ pub fn estimate_xi(
     let r = merged.iter().map(|(r, _)| *r).collect();
     let xi = merged.iter().map(|(_, x)| *x).collect();
 
-    MortonXiEstimate { levels, r, xi }
+    MortonXiEstimate { levels, cell_pair_xi: None, r, xi }
 }
 
 /// Run the Morton ξ estimator with random spatial offsets for sub-cell
@@ -353,6 +357,79 @@ pub fn estimate_xi_with_offsets(
     average_estimates(&all_estimates)
 }
 
+/// Hybrid estimator: grid-based LS at coarse levels, direct pair counting
+/// at fine scales below the grid resolution limit.
+///
+/// `l_grid_max`: finest level for grid-based LS (auto-detected if 0).
+/// `l_pair`: octree level at which to group cells for pair counting.
+///   Typically `l_grid_max + 1` or `l_grid_max + 2`.
+/// `n_pair_bins`: number of logarithmic radial bins for fine-scale ξ.
+/// `r_pair_min`: minimum separation for pair counting (e.g. 1.0 Mpc/h).
+pub fn estimate_xi_hybrid(
+    data: &[[f64; 3]],
+    randoms: &[[f64; 3]],
+    config: &MortonXiConfig,
+    l_pair: u32,
+    n_pair_bins: usize,
+    r_pair_min: f64,
+) -> MortonXiEstimate {
+    // 1. Grid-based LS at coarse levels (with offsets).
+    let mut grid_est = if config.n_offsets > 0 {
+        estimate_xi_with_offsets(data, randoms, config)
+    } else {
+        let particles = morton::prepare_particles(data, randoms, &config.morton_config);
+        estimate_xi(&particles, config)
+    };
+
+    // 2. Direct pair counting at fine scale.
+    let mc = &config.morton_config;
+    let _cell_size = mc.box_size / (1u64 << l_pair) as f64;
+    // r_max for pairs: the diagonal of a neighbor cell, h * sqrt(3).
+    // Actually we want to cover at least to where the grid LS starts.
+    // The coarsest grid LS bin is at h_grid * 1.0 (face neighbor).
+    // So r_pair_max should overlap with the finest grid level.
+    let h_grid = mc.box_size / (1u64 << config.l_max) as f64;
+    let r_pair_max = h_grid * 2.0_f64.sqrt(); // overlap into edge-neighbor scale
+
+    if r_pair_max <= r_pair_min {
+        // No room for pair counting — return grid-only result.
+        return grid_est;
+    }
+
+    let r_edges = cell_pairs::log_bin_edges(r_pair_min, r_pair_max, n_pair_bins);
+    let particles = morton::prepare_particles(data, randoms, mc);
+    let counts = cell_pairs::count_cell_pairs(
+        &particles,
+        data,
+        randoms,
+        l_pair,
+        &r_edges,
+        mc,
+    );
+    let fine_xi = cell_pairs::landy_szalay(&counts);
+
+    // 3. Merge: grid levels + fine-scale pair counting.
+    // The fine-scale bins go into the merged (r, xi) array.
+    let mut merged: Vec<(f64, f64)> = grid_est
+        .levels
+        .iter()
+        .flat_map(|lev| lev.r.iter().copied().zip(lev.xi.iter().copied()))
+        .filter(|(r, _)| *r > 0.0)
+        .collect();
+
+    for (r, xi) in fine_xi.r.iter().zip(fine_xi.xi.iter()) {
+        merged.push((*r, *xi));
+    }
+
+    merged.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    grid_est.r = merged.iter().map(|(r, _)| *r).collect();
+    grid_est.xi = merged.iter().map(|(_, x)| *x).collect();
+    grid_est.cell_pair_xi = Some(fine_xi);
+
+    grid_est
+}
+
 /// Shift a position by an offset and wrap periodically.
 fn wrap_position(pos: &[f64; 3], offset: &[f64; 3], box_size: f64) -> [f64; 3] {
     [
@@ -367,6 +444,7 @@ fn average_estimates(estimates: &[MortonXiEstimate]) -> MortonXiEstimate {
     if estimates.is_empty() {
         return MortonXiEstimate {
             levels: Vec::new(),
+            cell_pair_xi: None,
             r: Vec::new(),
             xi: Vec::new(),
         };
@@ -412,7 +490,7 @@ fn average_estimates(estimates: &[MortonXiEstimate]) -> MortonXiEstimate {
     let r = merged.iter().map(|(r, _)| *r).collect();
     let xi = merged.iter().map(|(_, x)| *x).collect();
 
-    MortonXiEstimate { levels, r, xi }
+    MortonXiEstimate { levels, cell_pair_xi: None, r, xi }
 }
 
 // ---------------------------------------------------------------------------

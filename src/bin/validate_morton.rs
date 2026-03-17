@@ -75,6 +75,23 @@ struct Args {
     #[arg(long)]
     cic: bool,
 
+    /// Enable hybrid mode: grid LS at coarse levels + direct pair counting
+    /// at fine scales below the grid resolution limit.
+    #[arg(long)]
+    hybrid: bool,
+
+    /// Octree level for cell-pair grouping in hybrid mode (0 = auto = l_max + 1).
+    #[arg(long, default_value_t = 0)]
+    l_pair: u32,
+
+    /// Number of radial bins for fine-scale pair counting.
+    #[arg(long, default_value_t = 15)]
+    n_pair_bins: usize,
+
+    /// Minimum separation for pair counting (Mpc/h).
+    #[arg(long, default_value_t = 1.0)]
+    r_pair_min: f64,
+
     /// Output directory for PDF plots
     #[arg(long, default_value = "plots")]
     output_dir: String,
@@ -139,7 +156,17 @@ fn main() {
             seed: 3000 + mock_i as u64,
         };
 
-        let estimate = if args.n_offsets > 0 {
+        let estimate = if args.hybrid {
+            let l_pair = if args.l_pair == 0 { l_max + 1 } else { args.l_pair };
+            xi_morton::estimate_xi_hybrid(
+                &mock.positions,
+                &randoms,
+                &xi_config,
+                l_pair,
+                args.n_pair_bins,
+                args.r_pair_min,
+            )
+        } else if args.n_offsets > 0 {
             xi_morton::estimate_xi_with_offsets(&mock.positions, &randoms, &xi_config)
         } else {
             let particles =
@@ -166,6 +193,21 @@ fn main() {
                 }
             }
             println!();
+
+            // Cell-pair fine-scale results (hybrid mode).
+            if let Some(ref cp_xi) = estimate.cell_pair_xi {
+                println!("--- Fine-scale (direct pair counting) ---");
+                println!("{:>10} {:>10} {:>12} {:>10} {:>10}", "r", "ξ_pairs", "ξ_analytic", "DD", "RR");
+                println!("{}", "-".repeat(55));
+                for (i, (&r, &xi)) in cp_xi.r.iter().zip(cp_xi.xi.iter()).enumerate() {
+                    let xi_true = params.xi_analytic(r);
+                    println!(
+                        "{:>10.2} {:>10.4} {:>12.4} {:>10.0} {:>10.0}",
+                        r, xi, xi_true, cp_xi.dd[i], cp_xi.rr[i]
+                    );
+                }
+                println!();
+            }
 
             // CIC summary for first mock if requested.
             if args.cic {

@@ -173,7 +173,12 @@ fn parse_version(s: &str) -> PackageVersion {
 /// Format an f64 slice as a Typst array literal.
 fn fmt_array(values: &[f64]) -> String {
     let items: Vec<String> = values.iter().map(|v| format!("{:.8}", v)).collect();
-    format!("({})", items.join(", "))
+    if items.len() == 1 {
+        // Trailing comma ensures Typst treats `(x,)` as a 1-element array, not a float
+        format!("({},)", items[0])
+    } else {
+        format!("({})", items.join(", "))
+    }
 }
 
 /// Format scale parameter for lq.diagram.
@@ -989,16 +994,37 @@ pub struct CicPlotLevel {
 pub fn render_morton_xi(data: &MortonPlotData, config: &PlotConfig) -> String {
     let mut src = preamble(config);
 
-    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
-    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
+    // For log-y, filter analytic curve to positive values only
+    let (r_ana, xi_ana): (Vec<f64>, Vec<f64>) = data
+        .r_analytic
+        .iter()
+        .zip(&data.xi_analytic)
+        .filter(|(_, &xi)| xi > 0.0)
+        .map(|(&r, &xi)| (r, xi))
+        .unzip();
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&r_ana)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&xi_ana)));
 
+    // For log-y, filter merged data to bins with positive mean xi
     let n = data.r_merged.len();
-    let lower: Vec<f64> = (0..n).map(|i| data.xi_mean[i] - data.xi_std[i]).collect();
-    let upper: Vec<f64> = (0..n).map(|i| data.xi_mean[i] + data.xi_std[i]).collect();
-    src.push_str(&format!("#let r-merged = {}\n", fmt_array(&data.r_merged)));
-    src.push_str(&format!("#let xi-mean = {}\n", fmt_array(&data.xi_mean)));
-    src.push_str(&format!("#let lower = {}\n", fmt_array(&lower)));
-    src.push_str(&format!("#let upper = {}\n", fmt_array(&upper)));
+    let floor = 1e-6; // clamp lower fill-between bound for log scale
+    let filtered: Vec<(f64, f64, f64, f64)> = (0..n)
+        .filter(|&i| data.xi_mean[i] > 0.0)
+        .map(|i| {
+            let lo = (data.xi_mean[i] - data.xi_std[i]).max(floor);
+            let hi = data.xi_mean[i] + data.xi_std[i];
+            (data.r_merged[i], data.xi_mean[i], lo, hi)
+        })
+        .collect();
+    let r_pos: Vec<f64> = filtered.iter().map(|t| t.0).collect();
+    let xi_pos: Vec<f64> = filtered.iter().map(|t| t.1).collect();
+    let lo_pos: Vec<f64> = filtered.iter().map(|t| t.2).collect();
+    let hi_pos: Vec<f64> = filtered.iter().map(|t| t.3).collect();
+
+    src.push_str(&format!("#let r-merged = {}\n", fmt_array(&r_pos)));
+    src.push_str(&format!("#let xi-mean = {}\n", fmt_array(&xi_pos)));
+    src.push_str(&format!("#let lower = {}\n", fmt_array(&lo_pos)));
+    src.push_str(&format!("#let upper = {}\n", fmt_array(&hi_pos)));
 
     src.push_str(&format!(
         "\n#lq.diagram(\n  title: [Morton Grid: $xi(r)$ vs Analytic],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$xi(r)$],\n  {},\n",
@@ -1022,8 +1048,16 @@ pub fn render_morton_xi_levels(data: &MortonPlotData, config: &PlotConfig) -> St
     let mut src = preamble(config);
     src.push_str("#let lcolors = (rgb(\"#1f77b4\"), rgb(\"#ff7f0e\"), rgb(\"#2ca02c\"), rgb(\"#d62728\"), rgb(\"#9467bd\"), rgb(\"#8c564b\"), rgb(\"#e377c2\"), rgb(\"#7f7f7f\"), rgb(\"#bcbd22\"), rgb(\"#17becf\"))\n");
 
-    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
-    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
+    // For log-y, filter analytic curve to positive values
+    let (r_ana, xi_ana): (Vec<f64>, Vec<f64>) = data
+        .r_analytic
+        .iter()
+        .zip(&data.xi_analytic)
+        .filter(|(_, &xi)| xi > 0.0)
+        .map(|(&r, &xi)| (r, xi))
+        .unzip();
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&r_ana)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&xi_ana)));
 
     src.push_str(&format!(
         "\n#lq.diagram(\n  title: [Morton Grid: $xi(r)$ by Octree Level],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$xi(r)$],\n  {},\n",
@@ -1031,10 +1065,21 @@ pub fn render_morton_xi_levels(data: &MortonPlotData, config: &PlotConfig) -> St
     ));
 
     for lev in &data.levels {
+        // For log-y, only include points with positive xi
+        let (r_pos, xi_pos): (Vec<f64>, Vec<f64>) = lev
+            .r
+            .iter()
+            .zip(&lev.xi)
+            .filter(|(_, &xi)| xi > 0.0)
+            .map(|(&r, &xi)| (r, xi))
+            .unzip();
+        if r_pos.is_empty() {
+            continue;
+        }
         let color_idx = (lev.level as usize).saturating_sub(1) % 10;
         src.push_str(&format!(
             "  lq.plot({}, {},\n    stroke: (paint: lcolors.at({}), thickness: 2pt),\n    mark: \"o\",\n    mark-size: 4pt,\n    label: [$ell = {}$]),\n",
-            fmt_array(&lev.r), fmt_array(&lev.xi), color_idx, lev.level,
+            fmt_array(&r_pos), fmt_array(&xi_pos), color_idx, lev.level,
         ));
     }
 
@@ -1114,9 +1159,17 @@ pub fn render_morton_summary(data: &MortonPlotData) -> String {
         width_cm: 14.0,
         height_cm: 10.0,
         log_x: true,
-        log_y: false,
+        log_y: true,
         x_range: None,
         y_range: None,
+    };
+    let config_res = PlotConfig {
+        width_cm: 14.0,
+        height_cm: 10.0,
+        log_x: true,
+        log_y: false,
+        x_range: None,
+        y_range: Some((-10.0, 10.0)),
     };
     let config_lin = PlotConfig {
         width_cm: 14.0,
@@ -1135,18 +1188,46 @@ pub fn render_morton_summary(data: &MortonPlotData) -> String {
     src.push_str("#let crimson = rgb(\"#DC143C\")\n");
     src.push_str("#let lcolors = (rgb(\"#1f77b4\"), rgb(\"#ff7f0e\"), rgb(\"#2ca02c\"), rgb(\"#d62728\"), rgb(\"#9467bd\"), rgb(\"#8c564b\"), rgb(\"#e377c2\"), rgb(\"#7f7f7f\"), rgb(\"#bcbd22\"), rgb(\"#17becf\"))\n");
 
-    // Shared data
-    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
-    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
-    src.push_str(&format!("#let r-merged = {}\n", fmt_array(&data.r_merged)));
-    src.push_str(&format!("#let xi-mean = {}\n", fmt_array(&data.xi_mean)));
+    // Shared data — filter to positive values for log-y xi plots
+    let (r_ana, xi_ana): (Vec<f64>, Vec<f64>) = data
+        .r_analytic
+        .iter()
+        .zip(&data.xi_analytic)
+        .filter(|(_, &xi)| xi > 0.0)
+        .map(|(&r, &xi)| (r, xi))
+        .unzip();
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&r_ana)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&xi_ana)));
 
     let n = data.r_merged.len();
-    let lower: Vec<f64> = (0..n).map(|i| data.xi_mean[i] - data.xi_std[i]).collect();
-    let upper: Vec<f64> = (0..n).map(|i| data.xi_mean[i] + data.xi_std[i]).collect();
-    src.push_str(&format!("#let lower = {}\n", fmt_array(&lower)));
-    src.push_str(&format!("#let upper = {}\n", fmt_array(&upper)));
+    let floor = 1e-6;
+    let filtered: Vec<(f64, f64, f64, f64)> = (0..n)
+        .filter(|&i| data.xi_mean[i] > 0.0)
+        .map(|i| {
+            let lo = (data.xi_mean[i] - data.xi_std[i]).max(floor);
+            let hi = data.xi_mean[i] + data.xi_std[i];
+            (data.r_merged[i], data.xi_mean[i], lo, hi)
+        })
+        .collect();
+    src.push_str(&format!(
+        "#let r-merged = {}\n",
+        fmt_array(&filtered.iter().map(|t| t.0).collect::<Vec<_>>()),
+    ));
+    src.push_str(&format!(
+        "#let xi-mean = {}\n",
+        fmt_array(&filtered.iter().map(|t| t.1).collect::<Vec<_>>()),
+    ));
+    src.push_str(&format!(
+        "#let lower = {}\n",
+        fmt_array(&filtered.iter().map(|t| t.2).collect::<Vec<_>>()),
+    ));
+    src.push_str(&format!(
+        "#let upper = {}\n",
+        fmt_array(&filtered.iter().map(|t| t.3).collect::<Vec<_>>()),
+    ));
 
+    // Residuals use all bins (linear y), but clipped by ylim
+    let r_all = &data.r_merged;
     let residuals: Vec<f64> = (0..n)
         .map(|i| {
             let r = data.r_merged[i];
@@ -1154,6 +1235,7 @@ pub fn render_morton_summary(data: &MortonPlotData) -> String {
             if data.xi_std[i] > 0.0 { (data.xi_mean[i] - xi_true) / data.xi_std[i] } else { 0.0 }
         })
         .collect();
+    src.push_str(&format!("#let r-all = {}\n", fmt_array(r_all)));
     src.push_str(&format!("#let residuals = {}\n", fmt_array(&residuals)));
 
     src.push_str("\n#grid(\n  columns: (1fr, 1fr),\n  rows: (1fr, 1fr),\n  gutter: 8pt,\n");
@@ -1169,30 +1251,40 @@ pub fn render_morton_summary(data: &MortonPlotData) -> String {
     src.push_str(&format!("    lq.vlines({:.8}, stroke: (dash: \"dotted\", paint: gray, thickness: 0.8pt)),\n", data.line_length));
     src.push_str("  ),\n");
 
-    // (b) xi by level
+    // (b) xi by level — filter per-level to positive xi for log-y
     src.push_str(&format!(
         "  lq.diagram(\n    title: [(b) $xi(r)$ by Octree Level],\n    xlabel: [$r$],\n    ylabel: [$xi(r)$],\n    {},\n",
         diagram_opts(&config_xi),
     ));
     for lev in &data.levels {
+        let (r_pos, xi_pos): (Vec<f64>, Vec<f64>) = lev
+            .r
+            .iter()
+            .zip(&lev.xi)
+            .filter(|(_, &xi)| xi > 0.0)
+            .map(|(&r, &xi)| (r, xi))
+            .unzip();
+        if r_pos.is_empty() {
+            continue;
+        }
         let ci = (lev.level as usize).saturating_sub(1) % 10;
         src.push_str(&format!(
             "    lq.plot({}, {}, stroke: (paint: lcolors.at({}), thickness: 2pt), mark: \"o\", mark-size: 3pt, label: [$ell={}$]),\n",
-            fmt_array(&lev.r), fmt_array(&lev.xi), ci, lev.level,
+            fmt_array(&r_pos), fmt_array(&xi_pos), ci, lev.level,
         ));
     }
     src.push_str("    lq.plot(r-analytic, xi-analytic, stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt)),\n");
     src.push_str("  ),\n");
 
-    // (c) residuals
+    // (c) residuals — clipped ylim
     src.push_str(&format!(
         "  lq.diagram(\n    title: [(c) Residuals],\n    xlabel: [$r$],\n    ylabel: [$(hat(xi) - xi) / sigma$],\n    {},\n",
-        diagram_opts(&config_lin),
+        diagram_opts(&config_res),
     ));
     src.push_str("    lq.hlines(0, stroke: (paint: black, thickness: 0.5pt)),\n");
     src.push_str("    lq.hlines(2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
     src.push_str("    lq.hlines(-2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
-    src.push_str("    lq.plot(r-merged, residuals, stroke: none, mark: \"o\", mark-size: 5pt, color: steelblue),\n");
+    src.push_str("    lq.plot(r-all, residuals, stroke: none, mark: \"o\", mark-size: 5pt, color: steelblue),\n");
     src.push_str("  ),\n");
 
     // (d) CIC

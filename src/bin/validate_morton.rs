@@ -333,10 +333,15 @@ fn main() {
 
     let plotter = TypstPlotter::new();
 
-    // Individual plots — use log-x, linear-y since xi can be negative at large r
+    // Individual plots — log-log for xi, log-x for residuals/CIC
     let config_xi = PlotConfig {
         log_x: true,
-        log_y: false,
+        log_y: true,
+        ..PlotConfig::default()
+    };
+    let config_res = PlotConfig {
+        log_x: true,
+        y_range: Some((-10.0, 10.0)),
         ..PlotConfig::default()
     };
     let config_lin = PlotConfig {
@@ -355,7 +360,7 @@ fn main() {
         ),
         (
             "morton_residuals",
-            plotting::render_morton_residuals(&plot_data, &config_lin),
+            plotting::render_morton_residuals(&plot_data, &config_res),
         ),
         (
             "morton_cic",

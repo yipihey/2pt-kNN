@@ -21,6 +21,9 @@ pub mod tidal;
 pub mod multipole;
 pub mod gravity;
 pub mod fmm;
+pub mod consistency;
+pub mod conditional;
+pub mod likelihood;
 
 use moments::{BBox3, Monopole, compute_bbox_and_monopole};
 

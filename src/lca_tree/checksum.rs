@@ -4,7 +4,9 @@
 //! over all internal nodes, plus intra-leaf pair weights, equals the expected
 //! total pair weight:
 //!
-//!     Σ_v W_L(v) × W_R(v) + Σ_leaf Σ_{i<j} w_i w_j = (W²_total − Σ w_i²) / 2
+//! ```text
+//! Σ_v W_L(v) × W_R(v) + Σ_leaf Σ_{i<j} w_i·w_j = (W_total² − Σ w_i²) / 2
+//! ```
 //!
 //! With leaf_size > 1, pairs within a leaf have no LCA node, so the identity
 //! must include the leaf contribution.

@@ -73,6 +73,11 @@ name = "twopoint-validate-lca"
 path = "src/bin/validate_lca.rs"
 required-features = ["cli"]
 
+[[bin]]
+name = "twopoint-validate-tidal"
+path = "src/bin/validate_tidal.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "test_plot"
 required-features = ["typst-plots"]

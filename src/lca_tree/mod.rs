@@ -16,6 +16,11 @@ pub mod checksum;
 pub mod kernel;
 pub mod randoms;
 pub mod estimator;
+pub mod eigen;
+pub mod tidal;
+pub mod multipole;
+pub mod gravity;
+pub mod fmm;
 
 use moments::{BBox3, Monopole, compute_bbox_and_monopole};
 

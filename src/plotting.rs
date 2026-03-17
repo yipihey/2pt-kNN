@@ -87,6 +87,22 @@ impl TypstPlotter {
 
     /// Compile a Typst source string to SVG.
     pub fn render(&self, typst_source: &str) -> String {
+        let doc = self.compile_doc(typst_source);
+        if let Some(page) = doc.pages.first() {
+            typst_svg::svg(page)
+        } else {
+            String::from("<svg/>")
+        }
+    }
+
+    /// Compile a Typst source string to PDF bytes.
+    pub fn render_pdf(&self, typst_source: &str) -> Vec<u8> {
+        let doc = self.compile_doc(typst_source);
+        typst_pdf::pdf(&doc, &typst_pdf::PdfOptions::default())
+            .expect("PDF generation failed")
+    }
+
+    fn compile_doc(&self, typst_source: &str) -> PagedDocument {
         let engine = TypstEngine::builder()
             .main_file(typst_source)
             .fonts([FONT_REGULAR as &[u8], FONT_MATH as &[u8]])
@@ -96,13 +112,7 @@ impl TypstPlotter {
 
         let result = engine.compile::<PagedDocument>();
         match result.output {
-            Ok(doc) => {
-                if let Some(page) = doc.pages.first() {
-                    typst_svg::svg(page)
-                } else {
-                    String::from("<svg/>")
-                }
-            }
+            Ok(doc) => doc,
             Err(e) => {
                 let warnings: Vec<String> =
                     result.warnings.iter().map(|w| format!("{:?}", w)).collect();
@@ -935,4 +945,285 @@ pub fn render_dilution_plot(result: &ValidationResult) -> String {
     );
 
     compile_to_svg(&source)
+}
+
+// ---------------------------------------------------------------------------
+// Morton-grid estimator plots
+// ---------------------------------------------------------------------------
+
+/// Data for Morton-grid estimator plots.
+pub struct MortonPlotData {
+    /// Per-level binned results (level, r[3], xi[3], n_pairs[3]).
+    pub levels: Vec<MortonLevelData>,
+    /// Analytic xi(r) curve: (r, xi) pairs for smooth plotting.
+    pub r_analytic: Vec<f64>,
+    pub xi_analytic: Vec<f64>,
+    /// Mean and std across mocks (same shape as merged r/xi).
+    pub r_merged: Vec<f64>,
+    pub xi_mean: Vec<f64>,
+    pub xi_std: Vec<f64>,
+    /// CoxMock line length (for reference line).
+    pub line_length: f64,
+    /// CIC data (optional).
+    pub cic: Option<Vec<CicPlotLevel>>,
+}
+
+/// Per-level data for Morton plots.
+pub struct MortonLevelData {
+    pub level: u32,
+    pub r: Vec<f64>,
+    pub xi: Vec<f64>,
+    pub n_pairs: Vec<u64>,
+}
+
+/// CIC data for one level.
+pub struct CicPlotLevel {
+    pub level: u32,
+    pub effective_radius: f64,
+    pub mean_n: f64,
+    pub var_n: f64,
+    pub skewness: f64,
+}
+
+/// Render Morton ξ(r) vs analytic comparison.
+pub fn render_morton_xi(data: &MortonPlotData, config: &PlotConfig) -> String {
+    let mut src = preamble(config);
+
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
+
+    let n = data.r_merged.len();
+    let lower: Vec<f64> = (0..n).map(|i| data.xi_mean[i] - data.xi_std[i]).collect();
+    let upper: Vec<f64> = (0..n).map(|i| data.xi_mean[i] + data.xi_std[i]).collect();
+    src.push_str(&format!("#let r-merged = {}\n", fmt_array(&data.r_merged)));
+    src.push_str(&format!("#let xi-mean = {}\n", fmt_array(&data.xi_mean)));
+    src.push_str(&format!("#let lower = {}\n", fmt_array(&lower)));
+    src.push_str(&format!("#let upper = {}\n", fmt_array(&upper)));
+
+    src.push_str(&format!(
+        "\n#lq.diagram(\n  title: [Morton Grid: $xi(r)$ vs Analytic],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$xi(r)$],\n  {},\n",
+        diagram_opts(config),
+    ));
+
+    src.push_str("  lq.fill-between(r-merged, lower, y2: upper,\n    fill: steelblue.lighten(80%),\n    stroke: none),\n");
+    src.push_str("  lq.plot(r-merged, xi-mean,\n    stroke: (paint: steelblue, thickness: 2pt),\n    label: [Morton mean $plus.minus 1 sigma$]),\n");
+    src.push_str("  lq.plot(r-analytic, xi-analytic,\n    stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt),\n    label: [Analytic]),\n");
+    src.push_str(&format!(
+        "  lq.vlines({:.8},\n    stroke: (dash: \"dotted\", paint: gray, thickness: 0.8pt)),\n",
+        data.line_length,
+    ));
+
+    src.push_str(")\n");
+    src
+}
+
+/// Render Morton ξ(r) per-level coloured by octree level.
+pub fn render_morton_xi_levels(data: &MortonPlotData, config: &PlotConfig) -> String {
+    let mut src = preamble(config);
+    src.push_str("#let lcolors = (rgb(\"#1f77b4\"), rgb(\"#ff7f0e\"), rgb(\"#2ca02c\"), rgb(\"#d62728\"), rgb(\"#9467bd\"), rgb(\"#8c564b\"), rgb(\"#e377c2\"), rgb(\"#7f7f7f\"), rgb(\"#bcbd22\"), rgb(\"#17becf\"))\n");
+
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
+
+    src.push_str(&format!(
+        "\n#lq.diagram(\n  title: [Morton Grid: $xi(r)$ by Octree Level],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$xi(r)$],\n  {},\n",
+        diagram_opts(config),
+    ));
+
+    for lev in &data.levels {
+        let color_idx = (lev.level as usize).saturating_sub(1) % 10;
+        src.push_str(&format!(
+            "  lq.plot({}, {},\n    stroke: (paint: lcolors.at({}), thickness: 2pt),\n    mark: \"o\",\n    mark-size: 4pt,\n    label: [$ell = {}$]),\n",
+            fmt_array(&lev.r), fmt_array(&lev.xi), color_idx, lev.level,
+        ));
+    }
+
+    src.push_str("  lq.plot(r-analytic, xi-analytic,\n    stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt),\n    label: [Analytic]),\n");
+
+    src.push_str(")\n");
+    src
+}
+
+/// Render Morton residuals: (ξ_morton - ξ_true) / σ
+pub fn render_morton_residuals(data: &MortonPlotData, config: &PlotConfig) -> String {
+    let mut src = preamble(config);
+
+    let n = data.r_merged.len();
+    let residuals: Vec<f64> = (0..n)
+        .map(|i| {
+            let r = data.r_merged[i];
+            let xi_true = interpolate_analytic(r, &data.r_analytic, &data.xi_analytic);
+            if data.xi_std[i] > 0.0 {
+                (data.xi_mean[i] - xi_true) / data.xi_std[i]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    src.push_str(&format!("#let r = {}\n", fmt_array(&data.r_merged)));
+    src.push_str(&format!("#let res = {}\n", fmt_array(&residuals)));
+
+    src.push_str(&format!(
+        "\n#lq.diagram(\n  title: [Morton Grid: Residuals $(hat(xi) - xi_\"true\") / sigma$],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [Residual [$sigma$]],\n  {},\n",
+        diagram_opts(config),
+    ));
+
+    src.push_str("  lq.hlines(0, stroke: (paint: black, thickness: 0.5pt)),\n");
+    src.push_str("  lq.hlines(2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
+    src.push_str("  lq.hlines(-2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
+    src.push_str("  lq.plot(r, res,\n    stroke: none,\n    mark: \"o\",\n    mark-size: 5pt,\n    color: steelblue),\n");
+
+    src.push_str(")\n");
+    src
+}
+
+/// Render CIC variance/mean ratio across octree levels.
+pub fn render_morton_cic(data: &MortonPlotData, config: &PlotConfig) -> String {
+    let mut src = preamble(config);
+
+    let cic = match &data.cic {
+        Some(c) => c,
+        None => return format!("{}\n// No CIC data\n", src),
+    };
+
+    let r_eff: Vec<f64> = cic.iter().map(|c| c.effective_radius).collect();
+    let var_over_mean: Vec<f64> = cic
+        .iter()
+        .map(|c| if c.mean_n > 0.0 { c.var_n / c.mean_n } else { 1.0 })
+        .collect();
+
+    src.push_str(&format!("#let r-eff = {}\n", fmt_array(&r_eff)));
+    src.push_str(&format!("#let vom = {}\n", fmt_array(&var_over_mean)));
+
+    src.push_str(&format!(
+        "\n#lq.diagram(\n  title: [Counts-in-Cells: $\"Var\" slash N$ vs Scale],\n  xlabel: [$r_\"eff\"$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$\"Var\"(N) / angle.l N angle.r$],\n  {},\n",
+        diagram_opts(config),
+    ));
+
+    src.push_str("  lq.hlines(1, stroke: (dash: \"dashed\", paint: gray, thickness: 0.8pt), label: [Poisson]),\n");
+    src.push_str("  lq.plot(r-eff, vom,\n    stroke: (paint: crimson, thickness: 2pt),\n    mark: \"o\",\n    mark-size: 5pt,\n    color: crimson,\n    label: [Morton CIC]),\n");
+
+    src.push_str(")\n");
+    src
+}
+
+/// Render a 2×2 summary figure for the Morton estimator.
+pub fn render_morton_summary(data: &MortonPlotData) -> String {
+    let config_xi = PlotConfig {
+        width_cm: 14.0,
+        height_cm: 10.0,
+        log_x: true,
+        log_y: false,
+        x_range: None,
+        y_range: None,
+    };
+    let config_lin = PlotConfig {
+        width_cm: 14.0,
+        height_cm: 10.0,
+        log_x: true,
+        log_y: false,
+        x_range: None,
+        y_range: None,
+    };
+
+    let mut src = String::new();
+    src.push_str("#set page(width: 30cm, height: 22cm, margin: 5mm)\n");
+    src.push_str("#set text(font: \"New Computer Modern\")\n");
+    src.push_str("#import \"@preview/lilaq:0.6.0\" as lq\n");
+    src.push_str("#let steelblue = rgb(\"#4682B4\")\n");
+    src.push_str("#let crimson = rgb(\"#DC143C\")\n");
+    src.push_str("#let lcolors = (rgb(\"#1f77b4\"), rgb(\"#ff7f0e\"), rgb(\"#2ca02c\"), rgb(\"#d62728\"), rgb(\"#9467bd\"), rgb(\"#8c564b\"), rgb(\"#e377c2\"), rgb(\"#7f7f7f\"), rgb(\"#bcbd22\"), rgb(\"#17becf\"))\n");
+
+    // Shared data
+    src.push_str(&format!("#let r-analytic = {}\n", fmt_array(&data.r_analytic)));
+    src.push_str(&format!("#let xi-analytic = {}\n", fmt_array(&data.xi_analytic)));
+    src.push_str(&format!("#let r-merged = {}\n", fmt_array(&data.r_merged)));
+    src.push_str(&format!("#let xi-mean = {}\n", fmt_array(&data.xi_mean)));
+
+    let n = data.r_merged.len();
+    let lower: Vec<f64> = (0..n).map(|i| data.xi_mean[i] - data.xi_std[i]).collect();
+    let upper: Vec<f64> = (0..n).map(|i| data.xi_mean[i] + data.xi_std[i]).collect();
+    src.push_str(&format!("#let lower = {}\n", fmt_array(&lower)));
+    src.push_str(&format!("#let upper = {}\n", fmt_array(&upper)));
+
+    let residuals: Vec<f64> = (0..n)
+        .map(|i| {
+            let r = data.r_merged[i];
+            let xi_true = interpolate_analytic(r, &data.r_analytic, &data.xi_analytic);
+            if data.xi_std[i] > 0.0 { (data.xi_mean[i] - xi_true) / data.xi_std[i] } else { 0.0 }
+        })
+        .collect();
+    src.push_str(&format!("#let residuals = {}\n", fmt_array(&residuals)));
+
+    src.push_str("\n#grid(\n  columns: (1fr, 1fr),\n  rows: (1fr, 1fr),\n  gutter: 8pt,\n");
+
+    // (a) xi(r) log-log
+    src.push_str(&format!(
+        "  lq.diagram(\n    title: [(a) $xi(r)$ Recovery],\n    xlabel: [$r$],\n    ylabel: [$xi(r)$],\n    {},\n",
+        diagram_opts(&config_xi),
+    ));
+    src.push_str("    lq.fill-between(r-merged, lower, y2: upper, fill: steelblue.lighten(80%), stroke: none),\n");
+    src.push_str("    lq.plot(r-merged, xi-mean, stroke: (paint: steelblue, thickness: 2pt), label: [Morton]),\n");
+    src.push_str("    lq.plot(r-analytic, xi-analytic, stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt), label: [Analytic]),\n");
+    src.push_str(&format!("    lq.vlines({:.8}, stroke: (dash: \"dotted\", paint: gray, thickness: 0.8pt)),\n", data.line_length));
+    src.push_str("  ),\n");
+
+    // (b) xi by level
+    src.push_str(&format!(
+        "  lq.diagram(\n    title: [(b) $xi(r)$ by Octree Level],\n    xlabel: [$r$],\n    ylabel: [$xi(r)$],\n    {},\n",
+        diagram_opts(&config_xi),
+    ));
+    for lev in &data.levels {
+        let ci = (lev.level as usize).saturating_sub(1) % 10;
+        src.push_str(&format!(
+            "    lq.plot({}, {}, stroke: (paint: lcolors.at({}), thickness: 2pt), mark: \"o\", mark-size: 3pt, label: [$ell={}$]),\n",
+            fmt_array(&lev.r), fmt_array(&lev.xi), ci, lev.level,
+        ));
+    }
+    src.push_str("    lq.plot(r-analytic, xi-analytic, stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt)),\n");
+    src.push_str("  ),\n");
+
+    // (c) residuals
+    src.push_str(&format!(
+        "  lq.diagram(\n    title: [(c) Residuals],\n    xlabel: [$r$],\n    ylabel: [$(hat(xi) - xi) / sigma$],\n    {},\n",
+        diagram_opts(&config_lin),
+    ));
+    src.push_str("    lq.hlines(0, stroke: (paint: black, thickness: 0.5pt)),\n");
+    src.push_str("    lq.hlines(2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
+    src.push_str("    lq.hlines(-2, stroke: (dash: \"dashed\", paint: gray, thickness: 0.5pt)),\n");
+    src.push_str("    lq.plot(r-merged, residuals, stroke: none, mark: \"o\", mark-size: 5pt, color: steelblue),\n");
+    src.push_str("  ),\n");
+
+    // (d) CIC
+    if let Some(ref cic) = data.cic {
+        let r_eff: Vec<f64> = cic.iter().map(|c| c.effective_radius).collect();
+        let vom: Vec<f64> = cic.iter().map(|c| if c.mean_n > 0.0 { c.var_n / c.mean_n } else { 1.0 }).collect();
+
+        src.push_str(&format!(
+            "  lq.diagram(\n    title: [(d) Counts-in-Cells],\n    xlabel: [$r_\"eff\"$],\n    ylabel: [$\"Var\"(N) / angle.l N angle.r$],\n    {},\n",
+            diagram_opts(&config_lin),
+        ));
+        src.push_str(&format!("    lq.hlines(1, stroke: (dash: \"dashed\", paint: gray, thickness: 0.8pt), label: [Poisson]),\n"));
+        src.push_str(&format!("    lq.plot({}, {}, stroke: (paint: crimson, thickness: 2pt), mark: \"o\", mark-size: 5pt, color: crimson, label: [CIC]),\n",
+            fmt_array(&r_eff), fmt_array(&vom),
+        ));
+        src.push_str("  ),\n");
+    } else {
+        src.push_str("  [],\n");
+    }
+
+    src.push_str(")\n");
+    src
+}
+
+/// Linear interpolation of analytic xi at arbitrary r.
+fn interpolate_analytic(r: f64, r_grid: &[f64], xi_grid: &[f64]) -> f64 {
+    if r_grid.is_empty() { return 0.0; }
+    if r <= r_grid[0] { return xi_grid[0]; }
+    if r >= *r_grid.last().unwrap() { return *xi_grid.last().unwrap(); }
+    let idx = r_grid.partition_point(|&x| x < r);
+    if idx == 0 { return xi_grid[0]; }
+    let t = (r - r_grid[idx - 1]) / (r_grid[idx] - r_grid[idx - 1]);
+    xi_grid[idx - 1] + t * (xi_grid[idx] - xi_grid[idx - 1])
 }

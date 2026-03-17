@@ -23,7 +23,7 @@ parallel = ["dep:rayon"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:serde-wasm-bindgen", "dep:js-sys", "dep:web-sys", "getrandom/js"]
 interactive = ["dep:crossterm", "typst-plots"]
-typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-as-lib", "dep:comemo"]
+typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-pdf", "dep:typst-as-lib", "dep:comemo"]
 python = []  # future: pyo3 bindings
 
 [dependencies]
@@ -47,6 +47,7 @@ crossterm = { version = "0.28", optional = true }
 # Optional: typst+lilaq plotting (WASM/web)
 typst = { version = "0.14", optional = true }
 typst-svg = { version = "0.14", optional = true }
+typst-pdf = { version = "0.14", optional = true }
 typst-as-lib = { version = "0.15", optional = true }
 comemo = { version = "0.4", optional = true }
 
@@ -65,7 +66,7 @@ web-sys = { version = "0.3", optional = true, features = ["console"] }
 [[bin]]
 name = "twopoint-validate-morton"
 path = "src/bin/validate_morton.rs"
-required-features = ["cli"]
+required-features = ["cli", "typst-plots"]
 
 [[example]]
 name = "test_plot"

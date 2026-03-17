@@ -14,6 +14,9 @@ use twopoint::cic;
 use twopoint::grid;
 use twopoint::mock::{CoxMock, CoxMockParams};
 use twopoint::morton::{self, MortonConfig};
+use twopoint::plotting::{
+    self, CicPlotLevel, MortonLevelData, MortonPlotData, PlotConfig, TypstPlotter,
+};
 use twopoint::xi_morton::{self, MortonXiConfig, MortonXiEstimate};
 
 #[derive(Parser, Debug)]
@@ -71,6 +74,10 @@ struct Args {
     /// Show counts-in-cells summary
     #[arg(long)]
     cic: bool,
+
+    /// Output directory for PDF plots
+    #[arg(long, default_value = "plots")]
+    output_dir: String,
 }
 
 fn main() {
@@ -216,6 +223,169 @@ fn main() {
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Generate PDF plots
+    // -----------------------------------------------------------------------
+    std::fs::create_dir_all(&args.output_dir).expect("Failed to create output directory");
+
+    // Build MortonPlotData from accumulated results.
+    let ref_est = &all_estimates[0];
+    let n_levels = ref_est.levels.len();
+
+    // Compute mean and std across mocks for the merged (r, xi) arrays.
+    let r_merged: Vec<f64> = ref_est.r.clone();
+    let n_merged = r_merged.len();
+    let mut xi_mean_arr = vec![0.0f64; n_merged];
+    let mut xi_var_arr = vec![0.0f64; n_merged];
+
+    // First pass: mean of the merged xi (from all_estimates[i].xi).
+    for est in &all_estimates {
+        for (j, &xi) in est.xi.iter().enumerate() {
+            xi_mean_arr[j] += xi;
+        }
+    }
+    let nm = all_estimates.len() as f64;
+    for j in 0..n_merged {
+        xi_mean_arr[j] /= nm;
+    }
+    // Second pass: variance.
+    for est in &all_estimates {
+        for (j, &xi) in est.xi.iter().enumerate() {
+            xi_var_arr[j] += (xi - xi_mean_arr[j]).powi(2);
+        }
+    }
+    let xi_std_arr: Vec<f64> = xi_var_arr.iter().map(|v| (v / nm).sqrt()).collect();
+
+    // Per-level data from the mean across mocks.
+    let level_data: Vec<MortonLevelData> = (0..n_levels)
+        .map(|li| {
+            let ref_lev = &ref_est.levels[li];
+            let n_bins = ref_lev.r.len();
+            let mut avg_xi = vec![0.0; n_bins];
+            let mut total_pairs = vec![0u64; n_bins];
+            for est in &all_estimates {
+                for bi in 0..n_bins {
+                    avg_xi[bi] += est.levels[li].xi[bi];
+                    total_pairs[bi] += est.levels[li].n_pairs[bi];
+                }
+            }
+            for bi in 0..n_bins {
+                avg_xi[bi] /= nm;
+            }
+            MortonLevelData {
+                level: ref_lev.level,
+                r: ref_lev.r.clone(),
+                xi: avg_xi,
+                n_pairs: total_pairs,
+            }
+        })
+        .collect();
+
+    // Smooth analytic curve.
+    let r_min_plot = r_merged.first().copied().unwrap_or(1.0) * 0.5;
+    let r_max_plot = params.line_length;
+    let n_smooth = 200;
+    let r_analytic: Vec<f64> = (0..n_smooth)
+        .map(|i| r_min_plot + (r_max_plot - r_min_plot) * i as f64 / (n_smooth - 1) as f64)
+        .collect();
+    let xi_analytic: Vec<f64> = r_analytic.iter().map(|&r| params.xi_analytic(r)).collect();
+
+    // CIC data.
+    let cic_data = if args.cic {
+        let mc = MortonConfig {
+            bits_per_axis: args.bits,
+            box_size: params.box_size,
+            periodic: true,
+        };
+        let mock0 = CoxMock::generate(&params, 1000);
+        let randoms0 = CoxMock::generate_randoms(n_random, params.box_size, 2000);
+        let particles = morton::prepare_particles(&mock0.positions, &randoms0, &mc);
+        let histograms = grid::build_all_levels(&particles, &mc, args.l_max);
+        let cic_summary = cic::compute_cic_all_levels(&histograms, &mc);
+        Some(
+            cic_summary
+                .levels
+                .iter()
+                .map(|d| CicPlotLevel {
+                    level: d.level,
+                    effective_radius: d.effective_radius,
+                    mean_n: d.mean_n,
+                    var_n: d.var_n,
+                    skewness: d.skewness,
+                })
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+
+    let plot_data = MortonPlotData {
+        levels: level_data,
+        r_analytic,
+        xi_analytic,
+        r_merged,
+        xi_mean: xi_mean_arr,
+        xi_std: xi_std_arr,
+        line_length: params.line_length,
+        cic: cic_data,
+    };
+
+    let plotter = TypstPlotter::new();
+
+    // Individual plots — use log-x, linear-y since xi can be negative at large r
+    let config_xi = PlotConfig {
+        log_x: true,
+        log_y: false,
+        ..PlotConfig::default()
+    };
+    let config_lin = PlotConfig {
+        log_x: true,
+        ..PlotConfig::default()
+    };
+
+    let plots: Vec<(&str, String)> = vec![
+        (
+            "morton_xi_vs_analytic",
+            plotting::render_morton_xi(&plot_data, &config_xi),
+        ),
+        (
+            "morton_xi_by_level",
+            plotting::render_morton_xi_levels(&plot_data, &config_xi),
+        ),
+        (
+            "morton_residuals",
+            plotting::render_morton_residuals(&plot_data, &config_lin),
+        ),
+        (
+            "morton_cic",
+            plotting::render_morton_cic(&plot_data, &config_lin),
+        ),
+        (
+            "morton_summary",
+            plotting::render_morton_summary(&plot_data),
+        ),
+    ];
+
+    for (name, typst_src) in &plots {
+        // Dump typst source for debugging
+        let src_path = format!("{}/{}.typ", args.output_dir, name);
+        std::fs::write(&src_path, typst_src).ok();
+
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            plotter.render_pdf(typst_src)
+        })) {
+            Ok(pdf_bytes) => {
+                let path = format!("{}/{}.pdf", args.output_dir, name);
+                std::fs::write(&path, &pdf_bytes).expect("Failed to write PDF");
+                println!("Wrote {}", path);
+            }
+            Err(_) => {
+                eprintln!("Failed to compile {name}.typ — see {src_path} for source");
+            }
+        }
+    }
+    println!();
 
     // Corrfunc comparison.
     #[cfg(not(target_arch = "wasm32"))]

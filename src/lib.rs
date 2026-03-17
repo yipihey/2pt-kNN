@@ -25,6 +25,12 @@ pub mod diagnostics;
 pub mod corrfunc;
 pub mod validation;
 
+// Morton-grid estimator modules
+pub mod morton;
+pub mod grid;
+pub mod xi_morton;
+pub mod cic;
+
 #[cfg(feature = "typst-plots")]
 pub mod plotting;
 #[cfg(feature = "gpu")]

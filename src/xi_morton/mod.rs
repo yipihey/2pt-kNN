@@ -1,0 +1,452 @@
+//! Two-point correlation function estimation via Morton-grid neighbor lags.
+//!
+//! At each octree level ℓ, the estimator computes ξ̂ from cell-pair
+//! correlations at the 13 unique nearest-neighbor lag vectors, giving
+//! 3 separation bins per level (face, edge, corner). Multi-level
+//! analysis yields logarithmically spaced radial bins.
+
+use crate::grid;
+use crate::grid::OverdensityField;
+use crate::morton::{self, MortonConfig, MortonParticle, NEIGHBOR_LAGS};
+
+// TODO: rayon parallelism over cells within each lag
+// #[cfg(feature = "parallel")]
+// use rayon::prelude::*;
+
+// ---------------------------------------------------------------------------
+// Kahan compensated summation
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug)]
+struct KahanAccumulator {
+    sum: f64,
+    comp: f64,
+}
+
+impl KahanAccumulator {
+    fn new() -> Self {
+        Self {
+            sum: 0.0,
+            comp: 0.0,
+        }
+    }
+
+    #[inline]
+    fn add(&mut self, val: f64) {
+        let y = val - self.comp;
+        let t = self.sum + y;
+        self.comp = (t - self.sum) - y;
+        self.sum = t;
+    }
+
+    fn value(&self) -> f64 {
+        self.sum
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.add(other.sum);
+        // Also carry over remaining compensation
+        self.add(-other.comp);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Result types
+// ---------------------------------------------------------------------------
+
+/// ξ̂ result at one octree level, with separate values for each lag.
+#[derive(Debug, Clone)]
+pub struct MortonXiLevel {
+    pub level: u32,
+    /// Physical separation for each lag (13 values).
+    pub r: Vec<f64>,
+    /// cos(θ) to the z-axis for each lag (for future anisotropic binning).
+    pub mu: Vec<f64>,
+    /// Estimated ξ at each lag.
+    pub xi: Vec<f64>,
+    /// Number of valid cell pairs contributing to each lag.
+    pub n_pairs: Vec<u64>,
+}
+
+/// Binned ξ̂ result at one level: 3 bins (face, edge, corner).
+#[derive(Debug, Clone)]
+pub struct MortonXiBinned {
+    pub level: u32,
+    /// Physical separation for each bin (3 values: h, h√2, h√3).
+    pub r: Vec<f64>,
+    /// Estimated ξ at each bin (averaged over lags at same |r|).
+    pub xi: Vec<f64>,
+    /// Total number of valid cell pairs per bin.
+    pub n_pairs: Vec<u64>,
+}
+
+/// Combined multi-resolution ξ̂ result.
+#[derive(Debug, Clone)]
+pub struct MortonXiEstimate {
+    /// Per-level binned results.
+    pub levels: Vec<MortonXiBinned>,
+    /// Merged (r, ξ) sorted by r.
+    pub r: Vec<f64>,
+    pub xi: Vec<f64>,
+}
+
+/// Configuration for the Morton ξ estimator.
+#[derive(Debug, Clone)]
+pub struct MortonXiConfig {
+    pub morton_config: MortonConfig,
+    /// Minimum octree level (coarsest grid).
+    pub l_min: u32,
+    /// Maximum octree level (finest grid).
+    pub l_max: u32,
+    /// Number of random spatial offsets for sub-cell interpolation (0 = none).
+    pub n_offsets: usize,
+    /// Random seed for offset generation.
+    pub seed: u64,
+}
+
+impl MortonXiConfig {
+    /// Reasonable defaults for a periodic box.
+    pub fn new(box_size: f64, l_max: u32) -> Self {
+        Self {
+            morton_config: MortonConfig::new(box_size, true),
+            l_min: 1,
+            l_max,
+            n_offsets: 0,
+            seed: 42,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Core estimator
+// ---------------------------------------------------------------------------
+
+/// Compute ξ̂ at a single octree level from the overdensity field.
+pub fn compute_xi_level(field: &OverdensityField, config: &MortonConfig) -> MortonXiLevel {
+    let h = field.cell_size;
+    let n_lags = NEIGHBOR_LAGS.len();
+
+    let mut r_vals = Vec::with_capacity(n_lags);
+    let mut mu_vals = Vec::with_capacity(n_lags);
+    let mut xi_vals = Vec::with_capacity(n_lags);
+    let mut n_pairs_vals = Vec::with_capacity(n_lags);
+
+    for &(dx, dy, dz) in &NEIGHBOR_LAGS {
+        let dist = h * ((dx * dx + dy * dy + dz * dz) as f64).sqrt();
+        let mu = if dist > 0.0 {
+            (dz as f64 * h) / dist
+        } else {
+            0.0
+        };
+        r_vals.push(dist);
+        mu_vals.push(mu);
+
+        let (xi, np) = correlate_lag(field, dx, dy, dz, config);
+        xi_vals.push(xi);
+        n_pairs_vals.push(np);
+    }
+
+    MortonXiLevel {
+        level: field.level,
+        r: r_vals,
+        mu: mu_vals,
+        xi: xi_vals,
+        n_pairs: n_pairs_vals,
+    }
+}
+
+/// Compute the correlation for a single lag vector.
+fn correlate_lag(
+    field: &OverdensityField,
+    dx: i32,
+    dy: i32,
+    dz: i32,
+    config: &MortonConfig,
+) -> (f64, u64) {
+    let mut num = KahanAccumulator::new();
+    let mut denom = KahanAccumulator::new();
+    let mut n_pairs = 0u64;
+
+    for (i, &ci) in field.cell_indices.iter().enumerate() {
+        if !field.valid[i] {
+            continue;
+        }
+
+        if let Some(nbr_ci) = morton::neighbor_cell(ci, dx, dy, dz, field.level, config.periodic) {
+            if let Some(&j) = field.cell_map.get(&nbr_ci) {
+                if field.valid[j] {
+                    num.add(field.delta[i] * field.delta[j]);
+                    denom.add(1.0);
+                    n_pairs += 1;
+                }
+            }
+        }
+    }
+
+    let xi = if denom.value() > 0.0 {
+        num.value() / denom.value()
+    } else {
+        0.0
+    };
+
+    (xi, n_pairs)
+}
+
+/// Bin the 13 per-lag ξ values into 3 separation bins (face, edge, corner).
+pub fn bin_xi_level(level_result: &MortonXiLevel) -> MortonXiBinned {
+    let h = if !level_result.r.is_empty() {
+        // Face lags have distance h; extract it.
+        level_result.r[0]
+    } else {
+        0.0
+    };
+
+    // Group: face (indices 0-2), edge (3-8), corner (9-12)
+    let groups: &[&[usize]] = &[&[0, 1, 2], &[3, 4, 5, 6, 7, 8], &[9, 10, 11, 12]];
+    let multipliers = [1.0, std::f64::consts::SQRT_2, 3.0_f64.sqrt()];
+
+    let mut r = Vec::with_capacity(3);
+    let mut xi = Vec::with_capacity(3);
+    let mut n_pairs = Vec::with_capacity(3);
+
+    for (g, &mult) in groups.iter().zip(multipliers.iter()) {
+        r.push(h * mult);
+
+        let total_np: u64 = g.iter().map(|&i| level_result.n_pairs[i]).sum();
+        if total_np > 0 {
+            // Weighted average by number of pairs.
+            let sum_xi: f64 = g
+                .iter()
+                .map(|&i| level_result.xi[i] * level_result.n_pairs[i] as f64)
+                .sum();
+            xi.push(sum_xi / total_np as f64);
+        } else {
+            xi.push(0.0);
+        }
+        n_pairs.push(total_np);
+    }
+
+    MortonXiBinned {
+        level: level_result.level,
+        r,
+        xi,
+        n_pairs,
+    }
+}
+
+/// Run the full multi-level Morton ξ estimator.
+///
+/// Takes pre-sorted particles (from `morton::prepare_particles`).
+pub fn estimate_xi(
+    sorted_particles: &[MortonParticle],
+    config: &MortonXiConfig,
+) -> MortonXiEstimate {
+    let mc = &config.morton_config;
+
+    let mut levels = Vec::new();
+
+    for level in config.l_min..=config.l_max {
+        let hist = grid::build_cell_histogram(sorted_particles, level, mc.bits_per_axis);
+        let field = grid::compute_overdensity(&hist, mc);
+        let xi_level = compute_xi_level(&field, mc);
+        let binned = bin_xi_level(&xi_level);
+        levels.push(binned);
+    }
+
+    // Merge into a single (r, ξ) array sorted by r.
+    let mut merged: Vec<(f64, f64)> = levels
+        .iter()
+        .flat_map(|lev| lev.r.iter().copied().zip(lev.xi.iter().copied()))
+        .filter(|(r, _)| *r > 0.0)
+        .collect();
+    merged.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let r = merged.iter().map(|(r, _)| *r).collect();
+    let xi = merged.iter().map(|(_, x)| *x).collect();
+
+    MortonXiEstimate { levels, r, xi }
+}
+
+/// Run the Morton ξ estimator with random spatial offsets for sub-cell
+/// interpolation. Averages over `n_offsets` runs with different shifts.
+pub fn estimate_xi_with_offsets(
+    data: &[[f64; 3]],
+    randoms: &[[f64; 3]],
+    config: &MortonXiConfig,
+) -> MortonXiEstimate {
+    use rand::SeedableRng;
+    use rand::Rng;
+
+    if config.n_offsets == 0 {
+        let particles = morton::prepare_particles(data, randoms, &config.morton_config);
+        return estimate_xi(&particles, config);
+    }
+
+    let mut rng = rand::rngs::StdRng::seed_from_u64(config.seed);
+    let box_size = config.morton_config.box_size;
+    let finest_cell = box_size / (1u64 << config.l_max) as f64;
+
+    let mut all_estimates: Vec<MortonXiEstimate> = Vec::with_capacity(config.n_offsets);
+
+    for _ in 0..config.n_offsets {
+        let offset = [
+            rng.gen::<f64>() * finest_cell,
+            rng.gen::<f64>() * finest_cell,
+            rng.gen::<f64>() * finest_cell,
+        ];
+
+        let shifted_data: Vec<[f64; 3]> = data
+            .iter()
+            .map(|p| wrap_position(p, &offset, box_size))
+            .collect();
+        let shifted_randoms: Vec<[f64; 3]> = randoms
+            .iter()
+            .map(|p| wrap_position(p, &offset, box_size))
+            .collect();
+
+        let particles =
+            morton::prepare_particles(&shifted_data, &shifted_randoms, &config.morton_config);
+        all_estimates.push(estimate_xi(&particles, config));
+    }
+
+    // Average across offsets: merge by matching (level, bin_index).
+    average_estimates(&all_estimates)
+}
+
+/// Shift a position by an offset and wrap periodically.
+fn wrap_position(pos: &[f64; 3], offset: &[f64; 3], box_size: f64) -> [f64; 3] {
+    [
+        (pos[0] + offset[0]).rem_euclid(box_size),
+        (pos[1] + offset[1]).rem_euclid(box_size),
+        (pos[2] + offset[2]).rem_euclid(box_size),
+    ]
+}
+
+/// Average multiple MortonXiEstimates (from different offsets).
+fn average_estimates(estimates: &[MortonXiEstimate]) -> MortonXiEstimate {
+    if estimates.is_empty() {
+        return MortonXiEstimate {
+            levels: Vec::new(),
+            r: Vec::new(),
+            xi: Vec::new(),
+        };
+    }
+
+    let n = estimates.len() as f64;
+    let n_levels = estimates[0].levels.len();
+
+    let mut levels = Vec::with_capacity(n_levels);
+    for li in 0..n_levels {
+        let ref_level = &estimates[0].levels[li];
+        let n_bins = ref_level.r.len();
+        let mut avg_xi = vec![0.0; n_bins];
+        let mut total_pairs = vec![0u64; n_bins];
+
+        for est in estimates {
+            for bi in 0..n_bins {
+                avg_xi[bi] += est.levels[li].xi[bi];
+                total_pairs[bi] += est.levels[li].n_pairs[bi];
+            }
+        }
+
+        for bi in 0..n_bins {
+            avg_xi[bi] /= n;
+        }
+
+        levels.push(MortonXiBinned {
+            level: ref_level.level,
+            r: ref_level.r.clone(),
+            xi: avg_xi,
+            n_pairs: total_pairs,
+        });
+    }
+
+    // Rebuild merged arrays.
+    let mut merged: Vec<(f64, f64)> = levels
+        .iter()
+        .flat_map(|lev| lev.r.iter().copied().zip(lev.xi.iter().copied()))
+        .filter(|(r, _)| *r > 0.0)
+        .collect();
+    merged.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    let r = merged.iter().map(|(r, _)| *r).collect();
+    let xi = merged.iter().map(|(_, x)| *x).collect();
+
+    MortonXiEstimate { levels, r, xi }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::morton;
+    use rand::SeedableRng;
+    use rand::Rng;
+
+    /// Generate uniform random points in a periodic box.
+    fn uniform_random(n: usize, box_size: f64, seed: u64) -> Vec<[f64; 3]> {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                [
+                    rng.gen::<f64>() * box_size,
+                    rng.gen::<f64>() * box_size,
+                    rng.gen::<f64>() * box_size,
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn poisson_xi_near_zero() {
+        // Uniform random catalog → ξ should be consistent with 0.
+        let box_size = 100.0;
+        let n = 50_000;
+        let data = uniform_random(n, box_size, 1);
+        let randoms = uniform_random(n * 5, box_size, 2);
+
+        let config = MortonXiConfig::new(box_size, 5);
+        let particles = morton::prepare_particles(&data, &randoms, &config.morton_config);
+        let result = estimate_xi(&particles, &config);
+
+        // ξ should be close to 0 for all separations.
+        for (r, xi) in result.r.iter().zip(result.xi.iter()) {
+            assert!(
+                xi.abs() < 0.1,
+                "ξ({:.1}) = {:.4}, expected ~0 for Poisson",
+                r,
+                xi
+            );
+        }
+    }
+
+    #[test]
+    fn xi_level_structure() {
+        let box_size = 100.0;
+        let data = uniform_random(10_000, box_size, 10);
+        let randoms = uniform_random(50_000, box_size, 20);
+
+        let config = MortonXiConfig::new(box_size, 3);
+        let particles = morton::prepare_particles(&data, &randoms, &config.morton_config);
+        let result = estimate_xi(&particles, &config);
+
+        // Should have 3 levels (1, 2, 3), each with 3 bins.
+        assert_eq!(result.levels.len(), 3);
+        for lev in &result.levels {
+            assert_eq!(lev.r.len(), 3);
+            assert_eq!(lev.xi.len(), 3);
+            // All pairs should be non-zero (cells exist at each level).
+            for &np in &lev.n_pairs {
+                assert!(np > 0, "expected non-zero pairs at level {}", lev.level);
+            }
+        }
+
+        // Merged r should be sorted.
+        for w in result.r.windows(2) {
+            assert!(w[0] <= w[1]);
+        }
+    }
+}

@@ -62,6 +62,11 @@ serde-wasm-bindgen = { version = "0.6", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["console"] }
 
+[[bin]]
+name = "twopoint-validate-morton"
+path = "src/bin/validate_morton.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "test_plot"
 required-features = ["typst-plots"]

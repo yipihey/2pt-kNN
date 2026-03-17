@@ -30,6 +30,7 @@ pub mod morton;
 pub mod grid;
 pub mod xi_morton;
 pub mod cic;
+pub mod lca_tree;
 
 #[cfg(feature = "typst-plots")]
 pub mod plotting;

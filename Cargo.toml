@@ -68,6 +68,11 @@ name = "twopoint-validate-morton"
 path = "src/bin/validate_morton.rs"
 required-features = ["cli", "typst-plots"]
 
+[[bin]]
+name = "twopoint-validate-lca"
+path = "src/bin/validate_lca.rs"
+required-features = ["cli"]
+
 [[example]]
 name = "test_plot"
 required-features = ["typst-plots"]

@@ -1,0 +1,16 @@
+[package]
+name = "pt"
+version = "0.2.0"
+edition = "2021"
+description = "Perturbative sigma^2_J(M) from Lagrangian PT with Doroshkevich baseline"
+
+[dependencies]
+rayon = "1.10"
+rustfft = "6"
+num-complex = "0.4"
+
+[dev-dependencies]
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"

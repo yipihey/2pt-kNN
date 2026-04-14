@@ -15,7 +15,6 @@
 //! All heavy lifting lives in the library; the binary targets are thin
 //! control layers following the scix-client pattern.
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod tree;
 pub mod mock;
 pub mod estimator;
@@ -33,8 +32,16 @@ pub mod gpu;
 pub mod wasm;
 #[cfg(all(feature = "interactive", feature = "typst-plots"))]
 pub mod explorer;
+#[cfg(feature = "theory")]
+pub mod theory;
 
 /// Re-export core types at crate root
 pub use estimator::{LandySzalayKnn, KnnCdfs, cdf_k_values, cdf_r_grid};
+pub use estimator::{CumulativeProfile, PerPointProfiles, PointProfile, PointXi, RrMode};
+pub use estimator::cumulants::{
+    CountCumulants, PointJacobians, JacobianCumulants,
+    jacobians_from_knn, jacobian_cumulants, jacobian_cumulants_multi_k,
+};
+pub use diagnostics::ExcessVariance;
 pub use mock::CoxMock;
 pub use ladder::{DilutionLadder, LevelResult, CompositeXi, KnnCdfSummary, CompositeCdfs, stitch_levels};

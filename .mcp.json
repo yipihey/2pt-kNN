@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "twopoint": {
+      "command": "/Users/tabel/Projects/2pt-kNN/target/debug/twopoint-mcp"
+    }
+  }
+}

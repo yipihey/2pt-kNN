@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "pt"]
+
 [package]
 name = "twopoint"
 version = "0.1.0"
@@ -23,11 +26,12 @@ parallel = ["dep:rayon"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:pollster"]
 wasm = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:serde-wasm-bindgen", "dep:js-sys", "dep:web-sys", "getrandom/js"]
 interactive = ["dep:crossterm", "typst-plots"]
-typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-as-lib", "dep:comemo"]
+typst-plots = ["dep:typst", "dep:typst-svg", "dep:typst-pdf", "dep:typst-as-lib", "dep:comemo"]
 python = []  # future: pyo3 bindings
+theory = ["dep:pt"]
 
 [dependencies]
-bosque = { version = "0.2", default-features = false, features = ["sqrt-dist"] }
+bosque = { git = "https://github.com/yipihey/bosque", default-features = false, features = ["sqrt-dist"] }
 rand = "0.8"
 rand_distr = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -47,6 +51,7 @@ crossterm = { version = "0.28", optional = true }
 # Optional: typst+lilaq plotting (WASM/web)
 typst = { version = "0.14", optional = true }
 typst-svg = { version = "0.14", optional = true }
+typst-pdf = { version = "0.14", optional = true }
 typst-as-lib = { version = "0.15", optional = true }
 comemo = { version = "0.4", optional = true }
 
@@ -55,12 +60,20 @@ wgpu = { version = "24", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 pollster = { version = "0.4", optional = true }
 
+# Optional: perturbation theory predictions
+pt = { path = "pt", optional = true }
+
 # Optional: WASM entry points
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", optional = true, features = ["console"] }
+
+[[bin]]
+name = "twopoint-mcp"
+path = "src/bin/mcp_server.rs"
+required-features = ["theory"]
 
 [[example]]
 name = "test_plot"

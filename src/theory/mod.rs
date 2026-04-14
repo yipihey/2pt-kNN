@@ -16,11 +16,15 @@ pub use pt::knn_cdf::{
     rknn_cdf_with_poisson,
     dknn_cdf_biased,
     multi_k_rknn_cdfs, multi_k_dknn_cdfs,
+    TiltedKnnParams, TiltedKnnPrediction,
+    rknn_cdf_tilted, dknn_cdf_tilted, poisson_correct_cdf,
 };
 pub use pt::doroshkevich::{
     doroshkevich_cdf, doroshkevich_cdf_biased,
     doroshkevich_pdf, doroshkevich_pdf_biased,
     find_sigma_eff,
+    TiltedPass, doroshkevich_tilted_pass, doroshkevich_tilted_moments,
+    fit_tilt_to_moments, cdf_from_pdf, uniform_j_grid,
 };
 
 use pt::integrals::xi_bar_ws;

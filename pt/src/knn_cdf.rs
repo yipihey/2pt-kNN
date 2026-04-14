@@ -333,6 +333,219 @@ fn compute_sigma2_j(
     result
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Tilted-PDF kNN predictions
+//
+// Unlike the "σ_eff" approach above (which absorbs one moment — the variance —
+// into an adjusted Doroshkevich scale), the tilted-PDF approach deforms the
+// full Doroshkevich distribution to simultaneously match σ²_J AND s₃. This
+// yields improved PDFs, CDFs, and kNN predictions at moderate-R where the
+// skewness correction matters (≳ 5% at R ~ 10 Mpc/h and worse at smaller R).
+//
+// Pipeline:
+//   sigma_s = √(K₂ σ²_L)
+//   (α, β) = fit_tilt_to_moments(sigma_s, target_var=σ²_J, target_s3=s₃)
+//   tilted_pass = doroshkevich_tilted_pass(sigma_s, α, β, b1=0) → p_V, p_M
+//   CDF_V = cdf_from_pdf(p_V)
+//   CDF_M = cdf_from_pdf(p_M) [optionally biased]
+//   j₀(r) = (r / R_Lag)³     with R_Lag = (3k / 4π n̄)^(1/3)
+//   R-kNN:  P(r_k < r | k)       = CDF_V(j₀(r))
+//   D-kNN:  P(r_k < r | k, b1)   = CDF_M,biased(j₀(r))
+//   Poisson correction:  1D convolution of the J-PDF with the Poisson CDF.
+// ═══════════════════════════════════════════════════════════════════════════
+
+use crate::doroshkevich::{
+    doroshkevich_tilted_pass, fit_tilt_to_moments, cdf_from_pdf, uniform_j_grid,
+};
+
+/// Result of a tilted-PDF kNN prediction at one k value.
+#[derive(Clone, Debug)]
+pub struct TiltedKnnPrediction {
+    pub k: usize,
+    pub r_lag: f64,
+    pub sigma_s: f64,
+    /// Tilt parameter α used.
+    pub alpha: f64,
+    /// Tilt parameter β used.
+    pub beta: f64,
+    /// Achieved variance after fitting (should equal target_var to <tol).
+    pub achieved_var: f64,
+    /// Achieved s₃ after fitting.
+    pub achieved_s3: f64,
+    pub r_values: Vec<f64>,
+    pub cdf: Vec<f64>,
+    /// Volume-weighted PDF on the internal J grid.
+    pub j_grid: Vec<f64>,
+    pub pdf_v: Vec<f64>,
+    pub pdf_m: Vec<f64>,
+}
+
+/// Configuration for the tilted-PDF kNN prediction.
+#[derive(Clone, Copy, Debug)]
+pub struct TiltedKnnParams {
+    /// Quadrature points per eigenvalue dimension (default 80).
+    pub n_gauss: usize,
+    /// Integration range in units of σ (default 6.0).
+    pub l_range: f64,
+    /// Number of J bins for the PDF histogram.
+    pub n_j_bins: usize,
+    /// Lower edge of the J grid.
+    pub j_min: f64,
+    /// Upper edge of the J grid.
+    pub j_max: f64,
+    /// Maximum Newton iterations for tilt fitting.
+    pub max_iter: usize,
+    /// Relative tolerance for the normalized moment residual.
+    pub tol: f64,
+}
+
+impl Default for TiltedKnnParams {
+    fn default() -> Self {
+        TiltedKnnParams {
+            n_gauss: 60,
+            l_range: 6.0,
+            n_j_bins: 600,
+            j_min: -2.0,
+            j_max: 10.0,
+            max_iter: 25,
+            tol: 1e-3,
+        }
+    }
+}
+
+/// R-kNN CDF prediction (random-point → nearest-neighbour distance) with
+/// exponential-tilting PT corrections. Matches both σ²_J and s₃.
+///
+/// * `k` — neighbour rank
+/// * `nbar` — mean number density of the tracer [h³/Mpc³]
+/// * `sigma2_j` — corrected σ²_J(R_Lag) from the PT pipeline
+/// * `s3` — corrected reduced skewness s₃(R_Lag)
+/// * `r_values` — query radii [Mpc/h]
+pub fn rknn_cdf_tilted(
+    k: usize, nbar: f64, sigma2_j: f64, s3: f64,
+    r_values: &[f64], params: &TiltedKnnParams,
+) -> TiltedKnnPrediction {
+    let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
+    // Doroshkevich scale used inside the tilt: sqrt(target variance is the
+    // post-tilt σ²_J, so we seed the tilt from sigma_s = √(target_var)).
+    // The fit handles the rest.
+    let sigma_s = sigma2_j.max(0.0).sqrt();
+
+    let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
+        sigma_s, sigma2_j, s3, params.n_gauss, params.l_range,
+        params.max_iter, params.tol,
+    );
+
+    let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
+    let pass = doroshkevich_tilted_pass(
+        sigma_s, alpha, beta, 0.0, &j_grid, params.n_gauss, params.l_range,
+    );
+    let cdf_v = cdf_from_pdf(&pass.pdf_v, &j_grid);
+
+    let cdf = r_values.iter().map(|&r| {
+        let j0 = (r / r_lag).powi(3);
+        interp_cdf(&j_grid, &cdf_v, j0)
+    }).collect();
+
+    TiltedKnnPrediction {
+        k, r_lag, sigma_s, alpha, beta,
+        achieved_var: ach_var, achieved_s3: ach_s3,
+        r_values: r_values.to_vec(), cdf,
+        j_grid, pdf_v: pass.pdf_v, pdf_m: pass.pdf_m,
+    }
+}
+
+/// D-kNN CDF prediction (galaxy-centred → nearest-neighbour distance) with
+/// exponential-tilting PT corrections + bias shift. Uses the mass-weighted PDF
+/// tilted with α_effective = α + 6 b₁.
+///
+/// The α, β are fit from the UNBIASED tilted distribution matching σ²_J and s₃.
+/// Bias then adds +6 b₁ to α at PDF-evaluation time.
+pub fn dknn_cdf_tilted(
+    k: usize, nbar_ref: f64, sigma2_j: f64, s3: f64, b1: f64,
+    r_values: &[f64], params: &TiltedKnnParams,
+) -> TiltedKnnPrediction {
+    let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar_ref)).cbrt();
+    let sigma_s = sigma2_j.max(0.0).sqrt();
+
+    let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
+        sigma_s, sigma2_j, s3, params.n_gauss, params.l_range,
+        params.max_iter, params.tol,
+    );
+
+    let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
+    let pass = doroshkevich_tilted_pass(
+        sigma_s, alpha, beta, b1, &j_grid, params.n_gauss, params.l_range,
+    );
+    let cdf_m = cdf_from_pdf(&pass.pdf_m, &j_grid);
+
+    let cdf = r_values.iter().map(|&r| {
+        let j0 = (r / r_lag).powi(3);
+        interp_cdf(&j_grid, &cdf_m, j0)
+    }).collect();
+
+    TiltedKnnPrediction {
+        k, r_lag, sigma_s, alpha, beta,
+        achieved_var: ach_var, achieved_s3: ach_s3,
+        r_values: r_values.to_vec(), cdf,
+        j_grid, pdf_v: pass.pdf_v, pdf_m: pass.pdf_m,
+    }
+}
+
+/// Poisson-corrected kNN CDF for small k, via 1D convolution of the J-PDF
+/// with the Poisson CDF:
+///
+///   P(r_k < r | k) = ∫ P(N ≥ k | λ = n̄ V_eul × J') p_V(J') dJ'
+///
+/// Wait — this is not the right convolution: V_eul itself is R_Lag³ × J₀(r),
+/// and the enclosed count has mean n̄ V_eul. The relevant marginal is then
+///
+///   P(r_k < r | k) = P(N(r) ≥ k) averaged over J' with volume weighting
+///                  = ∫ [1 - Γ_reg(k, n̄ (4π/3) r³)] is the NAIVE Poisson;
+/// the J-coupling enters because the Lagrangian volume M/ρ̄ with k/n̄ mass has
+/// fluctuating Eulerian radius. At the operational level: for each J, the
+/// "effective query radius" is r × J^(-1/3), so:
+///
+///   CDF_Poisson(r) = ∫ F_Erlang(k, λ = n̄ (4π/3) (r J^(-1/3))³) p_V(J) dJ.
+///
+/// For J > 0 this simplifies to λ = n̄ (4π/3) r³ / J, so the Poisson argument
+/// scales as 1/J. Bins with J ≤ 0 are skipped.
+pub fn poisson_correct_cdf(
+    pdf_v: &[f64], j_grid: &[f64],
+    k: usize, nbar: f64, r_values: &[f64],
+) -> Vec<f64> {
+    let dj = if j_grid.len() >= 2 { j_grid[1] - j_grid[0] } else { 1.0 };
+    let four_pi_over_3 = 4.0 / 3.0 * PI;
+    r_values.iter().map(|&r| {
+        let r3 = r.powi(3);
+        let mut acc = 0.0;
+        for (p, &j) in pdf_v.iter().zip(j_grid.iter()) {
+            if j <= 0.0 || *p <= 0.0 { continue; }
+            let lambda = nbar * four_pi_over_3 * r3 / j;
+            // P(N ≥ k | λ) = 1 − P(N < k | λ) = 1 − Γ_reg(k, λ)
+            let p_ge_k = 1.0 - regularized_gamma_inc(k, lambda);
+            acc += p_ge_k * p * dj;
+        }
+        acc.clamp(0.0, 1.0)
+    }).collect()
+}
+
+/// Linear interpolation of a CDF on a uniform log-unspecified grid.
+/// Clamps to [0, 1] at the boundaries.
+fn interp_cdf(j_grid: &[f64], cdf: &[f64], j_query: f64) -> f64 {
+    let n = j_grid.len();
+    if n == 0 { return 0.0; }
+    if j_query <= j_grid[0] { return cdf[0]; }
+    if j_query >= j_grid[n - 1] { return cdf[n - 1]; }
+    // Uniform grid assumption.
+    let dj = j_grid[1] - j_grid[0];
+    let f = (j_query - j_grid[0]) / dj;
+    let i = f as usize;
+    let t = f - i as f64;
+    if i >= n - 1 { return cdf[n - 1]; }
+    cdf[i] * (1.0 - t) + cdf[i + 1] * t
+}
+
 /// Regularized incomplete gamma function: Γ(k, λ) / Γ(k).
 ///
 /// P(k, λ) = 1 - Q(k, λ) where Q is the survival function.
@@ -440,5 +653,150 @@ mod tests {
         let sigma_found = find_sigma_eff(target, n_gauss);
         assert!((sigma_found - sigma).abs() < 1e-4,
             "find_sigma_eff({:.6}) = {:.6}, expected {:.6}", target, sigma_found, sigma);
+    }
+
+    // ─── Tilted-PDF tests ───────────────────────────────────────────────
+
+    #[test]
+    fn tilt_zero_equals_doroshkevich() {
+        use crate::doroshkevich::{doroshkevich_tilted_moments};
+        let sigma = 0.5;
+        let m = doroshkevich_moments(sigma, 80, 6.0);
+        let (_, var_tilt, _, s3_tilt) =
+            doroshkevich_tilted_moments(sigma, 0.0, 0.0, 0.0, 80, 6.0);
+        assert!((var_tilt - m.variance).abs() / m.variance < 1e-10,
+                "α=β=0 must reproduce Doroshkevich: var {} vs {}", var_tilt, m.variance);
+        assert!((s3_tilt - m.s3).abs() / m.s3.abs() < 1e-9,
+                "α=β=0 must reproduce Doroshkevich s3: {} vs {}", s3_tilt, m.s3);
+    }
+
+    #[test]
+    fn tilt_fit_converges_to_targets() {
+        use crate::doroshkevich::{doroshkevich_moments, fit_tilt_to_moments,
+                                    doroshkevich_tilted_moments};
+        // Pick a σ for which perturbation theory is meaningful, then tilt
+        // toward a modestly different (variance, s3) — matching the scale of
+        // 2LPT corrections — and check Newton recovers it.
+        let sigma = 1.0;
+        let base = doroshkevich_moments(sigma, 80, 6.0);
+        let target_var = base.variance * 1.15;   // 15% variance enhancement
+        let target_s3 = base.s3 * 1.40;           // 40% s3 enhancement
+        let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
+            sigma, target_var, target_s3, 80, 6.0, 50, 1e-4,
+        );
+        let rel_v = (ach_var - target_var).abs() / target_var;
+        let rel_s = (ach_s3 - target_s3).abs() / target_s3.abs();
+        assert!(rel_v < 1e-2,
+                "var not matched: target {}, got {} (rel {:.2e}, α={} β={})",
+                target_var, ach_var, rel_v, alpha, beta);
+        assert!(rel_s < 1e-2,
+                "s3 not matched: target {}, got {} (rel {:.2e})",
+                target_s3, ach_s3, rel_s);
+        // Cross-check: a second call with the same α, β must give the same moments.
+        let (_, v2, _, s2) = doroshkevich_tilted_moments(sigma, alpha, beta, 0.0, 80, 6.0);
+        assert!((v2 - ach_var).abs() < 1e-12);
+        assert!((s2 - ach_s3).abs() < 1e-12);
+    }
+
+    #[test]
+    fn pdfs_normalize_to_one() {
+        use crate::doroshkevich::{doroshkevich_tilted_pass, uniform_j_grid};
+        let sigma = 0.5;
+        let j_grid = uniform_j_grid(-1.5, 6.0, 500);
+        let pass = doroshkevich_tilted_pass(sigma, 0.0, 0.0, 0.0, &j_grid, 80, 6.0);
+        let dj = j_grid[1] - j_grid[0];
+        let integral_v: f64 = pass.pdf_v.iter().sum::<f64>() * dj;
+        let integral_m: f64 = pass.pdf_m.iter().sum::<f64>() * dj;
+        // Volume PDF: should integrate to 1 (within bin-edge truncation).
+        assert!((integral_v - 1.0).abs() < 2e-2,
+                "p_V does not integrate to 1: {}", integral_v);
+        // Mass PDF: same (normalized separately).
+        assert!((integral_m - 1.0).abs() < 2e-2,
+                "p_M does not integrate to 1: {}", integral_m);
+    }
+
+    #[test]
+    fn mass_weighted_mean_below_volume_weighted() {
+        // Mass-weighted density p_M(J) ∝ p_V(J) / J puts MORE weight on small J
+        // (compressed regions, where unit volume carries more mass). Therefore
+        // ⟨J⟩_M ≤ ⟨J⟩_V = 1, with equality only for a delta-function PDF.
+        use crate::doroshkevich::{doroshkevich_tilted_pass, uniform_j_grid};
+        let sigma = 0.8;
+        let j_grid = uniform_j_grid(-1.0, 6.0, 400);
+        let pass = doroshkevich_tilted_pass(sigma, 0.0, 0.0, 0.0, &j_grid, 80, 6.0);
+        let dj = j_grid[1] - j_grid[0];
+        let mean_v: f64 = j_grid.iter().zip(pass.pdf_v.iter()).map(|(j, p)| j * p * dj).sum();
+        let mean_m: f64 = j_grid.iter().zip(pass.pdf_m.iter()).map(|(j, p)| j * p * dj).sum();
+        assert!(mean_v > 0.90 && mean_v < 1.10,
+                "volume-weighted ⟨J⟩ should be ≈ 1, got {}", mean_v);
+        assert!(mean_m < mean_v,
+                "mass-weighted ⟨J⟩ must be below volume-weighted ⟨J⟩ (got M={}, V={})",
+                mean_m, mean_v);
+        assert!(mean_m > 0.0,
+                "mass-weighted ⟨J⟩ should be positive (got {})", mean_m);
+    }
+
+    #[test]
+    fn poisson_limit_k1_unbiased() {
+        // In the no-clustering limit (σ → 0, so J → 1 deterministically), the
+        // tilted CDF approaches a step function at j₀ = 1. After Poisson
+        // convolution at k=1, the CDF should approach 1 − exp(−n̄(4π/3)r³),
+        // the Erlang k=1 (exponential) distribution.
+        use crate::doroshkevich::{doroshkevich_tilted_pass, uniform_j_grid};
+        let sigma = 0.05;   // essentially linear, J ≈ 1
+        let j_grid = uniform_j_grid(0.5, 1.5, 400);
+        let pass = doroshkevich_tilted_pass(sigma, 0.0, 0.0, 0.0, &j_grid, 60, 6.0);
+
+        let nbar = 1e-3;
+        let k = 1usize;
+        let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
+        let r_values: Vec<f64> = (1..=20).map(|i| 0.2 * i as f64 * r_lag).collect();
+
+        let cdf_poisson = poisson_correct_cdf(&pass.pdf_v, &j_grid, k, nbar, &r_values);
+        // Analytic Erlang-1 CDF: 1 − exp(−n̄ (4π/3) r³)
+        let four_pi_over_3 = 4.0 / 3.0 * PI;
+        for (&r, &p) in r_values.iter().zip(cdf_poisson.iter()) {
+            let lambda = nbar * four_pi_over_3 * r.powi(3);
+            let analytic = 1.0 - (-lambda).exp();
+            assert!((p - analytic).abs() < 0.01,
+                    "k=1 σ→0 Poisson CDF at r={:.1}: {} vs Erlang {}", r, p, analytic);
+        }
+    }
+
+    #[test]
+    fn rknn_cdf_tilted_monotonic_and_bounded() {
+        // End-to-end: tilted R-kNN at Planck-ish scales. CDF must be
+        // monotonic, bounded in [0, 1], and smooth.
+        use crate::{Cosmology, Workspace};
+        use crate::integrals::{IntegrationParams, sigma2_tree_ws};
+        use crate::doroshkevich::doroshkevich_moments;
+
+        let cosmo = Cosmology::planck2018();
+        let mut ws = Workspace::new(4000);
+        ws.update_cosmology(&cosmo);
+        let ip = IntegrationParams::fast();
+
+        let k = 16usize;
+        let nbar = 1e-3;
+        let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
+        let s = sigma2_tree_ws(r_lag, &ws, &ip);
+
+        // Use untilted Doroshkevich at σ = √s as the target (so we're matching
+        // the untilted distribution itself — tilt parameters should converge to 0).
+        let base = doroshkevich_moments(s.sqrt(), 80, 6.0);
+
+        let r_values: Vec<f64> = (1..=40).map(|i| 0.1 * i as f64 * r_lag).collect();
+        let pred = rknn_cdf_tilted(k, nbar, base.variance, base.s3,
+                                    &r_values, &TiltedKnnParams::default());
+
+        for i in 1..pred.cdf.len() {
+            assert!(pred.cdf[i] >= pred.cdf[i - 1] - 1e-10,
+                    "CDF not monotonic at i={}: {} < {}",
+                    i, pred.cdf[i], pred.cdf[i - 1]);
+        }
+        assert!(pred.cdf[0] >= 0.0 && *pred.cdf.last().unwrap() <= 1.0);
+        assert!(pred.cdf[0] < 0.05, "CDF at smallest r should be ~0, got {}", pred.cdf[0]);
+        assert!(*pred.cdf.last().unwrap() > 0.95,
+                "CDF at largest r should be ~1, got {}", pred.cdf.last().unwrap());
     }
 }

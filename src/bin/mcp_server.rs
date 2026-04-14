@@ -282,6 +282,38 @@ fn tool_definitions() -> Value {
                 "required": ["k_values", "nbar_ref", "b1", "r_values"]
             }
         },
+        {
+            "name": "knn_cdf_tilted",
+            "description": "Predict kNN CDFs using exponential-tilting of the Doroshkevich distribution. Matches BOTH target σ²_J and target s₃ (vs the older σ_eff approach which only matches variance). Returns CDF plus the internal J-PDFs. Set b1=0 for R-kNN (random query points), b1>0 for D-kNN (biased tracers).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "k_values": {"type": "array", "items": {"type": "integer"}, "description": "Neighbour ranks"},
+                    "nbar": {"type": "number", "description": "Reference number density [h^3/Mpc^3]"},
+                    "b1": {"type": "number", "default": 0.0, "description": "Linear bias (0 = R-kNN, >0 = D-kNN)"},
+                    "r_values": {"type": "array", "items": {"type": "number"}, "description": "Query radii [Mpc/h]"},
+                    "n_lpt": {"type": "integer", "default": 3},
+                    "with_poisson": {"type": "boolean", "default": false, "description": "Apply Poisson convolution (important for small k)"}
+                },
+                "required": ["k_values", "nbar", "r_values"]
+            }
+        },
+        {
+            "name": "pdf_j_tilted",
+            "description": "Compute the volume- and mass-weighted Jacobian PDFs p_V(J), p_M(J) using exponential-tilting of the Doroshkevich distribution. Matches target σ²_J and s₃. Returns the PDFs and CDFs on a user J-grid.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "r": {"type": "number", "description": "Smoothing radius R [Mpc/h]"},
+                    "n_lpt": {"type": "integer", "default": 3, "description": "LPT order"},
+                    "b1": {"type": "number", "default": 0.0, "description": "Linear bias for the mass-weighted biased PDF"},
+                    "j_min": {"type": "number", "default": -2.0},
+                    "j_max": {"type": "number", "default": 10.0},
+                    "n_j_bins": {"type": "integer", "default": 600}
+                },
+                "required": ["r"]
+            }
+        },
         // ── Geometry / conversions ──────────────────────────────────
         {
             "name": "geometry",
@@ -463,6 +495,8 @@ fn handle_tool_call(state: &mut ServerState, name: &str, args: &Value) -> Result
         "doroshkevich_cdf" => handle_doroshkevich_cdf(args),
         "rknn_cdf_predict" => handle_rknn_cdf_predict(state, args),
         "dknn_cdf_predict" => handle_dknn_cdf_predict(state, args),
+        "knn_cdf_tilted" => handle_knn_cdf_tilted(state, args),
+        "pdf_j_tilted" => handle_pdf_j_tilted(state, args),
         "geometry" => handle_geometry(state, args),
         "generate_mock" => handle_generate_mock(args),
         "estimate_xi" => handle_estimate_xi(args),
@@ -706,6 +740,102 @@ fn handle_dknn_cdf_predict(state: &mut ServerState, args: &Value) -> Result<Valu
     }).collect();
 
     Ok(json!({ "r_values": r_values, "nbar_ref": nbar_ref, "b1": b1, "predictions": results }))
+}
+
+/// Tilted-PDF kNN CDF: matches both σ²_J and s₃ via exponential tilting.
+fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value, String> {
+    let cosmo = state.get_cosmology()?.clone();
+    let k_values: Vec<usize> = serde_json::from_value(args["k_values"].clone())
+        .map_err(|e| format!("k_values: {}", e))?;
+    let nbar = args["nbar"].as_f64().ok_or("nbar required")?;
+    let b1 = args.get("b1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let r_values: Vec<f64> = serde_json::from_value(args["r_values"].clone())
+        .map_err(|e| format!("r_values: {}", e))?;
+    let n_lpt = args.get("n_lpt").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+    let with_poisson = args.get("with_poisson").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let tilt_params = theory::TiltedKnnParams::default();
+
+    let results: Vec<Value> = k_values.iter().map(|&k| {
+        // R(k, nbar): Lagrangian smoothing scale.
+        let r_lag = theory::knn_to_radius(k, nbar);
+        // Target moments at R_Lag from the PT pipeline.
+        let detailed = pt::sigma2_j_full(&cosmo, r_lag, n_lpt, 0.0, 0.0, true, false);
+        // Reduced s₃ = s3_jacobian / Var²
+        let s3_red = if detailed.sigma2_j > 1e-30 {
+            detailed.s3_jacobian / (detailed.sigma2_j * detailed.sigma2_j)
+        } else {
+            0.0
+        };
+        let pred = if b1 != 0.0 {
+            pt::knn_cdf::dknn_cdf_tilted(k, nbar, detailed.sigma2_j, s3_red, b1,
+                                          &r_values, &tilt_params)
+        } else {
+            pt::knn_cdf::rknn_cdf_tilted(k, nbar, detailed.sigma2_j, s3_red,
+                                          &r_values, &tilt_params)
+        };
+        let cdf_out = if with_poisson {
+            pt::knn_cdf::poisson_correct_cdf(&pred.pdf_v, &pred.j_grid, k, nbar, &r_values)
+        } else {
+            pred.cdf.clone()
+        };
+        json!({
+            "k": k,
+            "r_lag": pred.r_lag,
+            "sigma_s": pred.sigma_s,
+            "alpha": pred.alpha,
+            "beta": pred.beta,
+            "target_var": detailed.sigma2_j,
+            "target_s3": s3_red,
+            "achieved_var": pred.achieved_var,
+            "achieved_s3": pred.achieved_s3,
+            "cdf": cdf_out,
+        })
+    }).collect();
+
+    Ok(json!({
+        "r_values": r_values, "nbar": nbar, "b1": b1,
+        "with_poisson": with_poisson, "predictions": results,
+    }))
+}
+
+/// Volume- and mass-weighted Jacobian PDFs via tilted Doroshkevich.
+fn handle_pdf_j_tilted(state: &mut ServerState, args: &Value) -> Result<Value, String> {
+    let cosmo = state.get_cosmology()?.clone();
+    let r = args["r"].as_f64().ok_or("r required")?;
+    let n_lpt = args.get("n_lpt").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+    let b1 = args.get("b1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let j_min = args.get("j_min").and_then(|v| v.as_f64()).unwrap_or(-2.0);
+    let j_max = args.get("j_max").and_then(|v| v.as_f64()).unwrap_or(10.0);
+    let n_j_bins = args.get("n_j_bins").and_then(|v| v.as_u64()).unwrap_or(600) as usize;
+
+    let detailed = pt::sigma2_j_full(&cosmo, r, n_lpt, 0.0, 0.0, true, false);
+    let s3_red = if detailed.sigma2_j > 1e-30 {
+        detailed.s3_jacobian / (detailed.sigma2_j * detailed.sigma2_j)
+    } else {
+        0.0
+    };
+    let sigma_s = detailed.sigma2_j.max(0.0).sqrt();
+    let (alpha, beta, ach_var, ach_s3) = theory::fit_tilt_to_moments(
+        sigma_s, detailed.sigma2_j, s3_red, 80, 6.0, 30, 1e-4,
+    );
+    let j_grid = theory::uniform_j_grid(j_min, j_max, n_j_bins);
+    let pass = theory::doroshkevich_tilted_pass(
+        sigma_s, alpha, beta, b1, &j_grid, 80, 6.0,
+    );
+    let cdf_v = theory::cdf_from_pdf(&pass.pdf_v, &j_grid);
+    let cdf_m = theory::cdf_from_pdf(&pass.pdf_m, &j_grid);
+
+    Ok(json!({
+        "r": r, "n_lpt": n_lpt, "b1": b1,
+        "sigma_s": sigma_s,
+        "target_var": detailed.sigma2_j, "target_s3": s3_red,
+        "alpha": alpha, "beta": beta,
+        "achieved_var": ach_var, "achieved_s3": ach_s3,
+        "j_grid": j_grid,
+        "pdf_v": pass.pdf_v, "pdf_m": pass.pdf_m,
+        "cdf_v": cdf_v, "cdf_m": cdf_m,
+    }))
 }
 
 fn handle_geometry(state: &mut ServerState, args: &Value) -> Result<Value, String> {

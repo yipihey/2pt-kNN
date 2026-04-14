@@ -3,7 +3,9 @@
 Cargo.lock
 
 # WASM build artifacts (regenerable via wasm-pack)
+# Covers both a directory and a symlink named web/pkg.
 web/pkg/
+web/pkg
 
 # LaTeX
 paper/*.aux

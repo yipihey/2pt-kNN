@@ -356,6 +356,7 @@ fn compute_sigma2_j(
 
 use crate::doroshkevich::{
     doroshkevich_tilted_pass, fit_tilt_to_moments, cdf_from_pdf, uniform_j_grid,
+    BiasParams,
 };
 
 /// Pair type for kNN predictions.
@@ -463,52 +464,79 @@ pub fn knn_cdf_tilted(
     b1_query: f64, b1_neighbour: f64,
     r_values: &[f64], params: &TiltedKnnParams,
 ) -> TiltedKnnPrediction {
+    knn_cdf_tilted_bias(
+        pair_type, k, nbar, sigma2_j, s3,
+        BiasParams::b1_only(b1_query),
+        BiasParams::b1_only(b1_neighbour),
+        r_values, params,
+    )
+}
+
+/// Full Lagrangian-bias-expansion kNN CDF via polynomial bias weighting.
+///
+/// * `bias_query` — Lagrangian bias of the query sample (b₁, b₂, b_{s²}).
+/// * `bias_neighbour` — Lagrangian bias of the neighbour sample (b₁ used
+///   for the g-g neighbour-count enhancement via the (1+b₁_n × ⟨I₁|J⟩)
+///   factorised approximation; higher-order terms deferred).
+pub fn knn_cdf_tilted_bias(
+    pair_type: PairType,
+    k: usize, nbar: f64, sigma2_j: f64, s3: f64,
+    bias_query: BiasParams, bias_neighbour: BiasParams,
+    r_values: &[f64], params: &TiltedKnnParams,
+) -> TiltedKnnPrediction {
     let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
     let sigma_s = sigma2_j.max(0.0).sqrt();
 
-    let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
+    // Fit PT tilt (α_PT, β_PT) to match σ²_J and s₃ of the MATTER field
+    // (the bias does not change σ² of the matter).
+    let (alpha_pt, beta_pt, ach_var, ach_s3) = fit_tilt_to_moments(
         sigma_s, sigma2_j, s3, params.n_gauss, params.l_range,
         params.max_iter, params.tol,
     );
-    let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
 
-    // Query-side tilt: for Mm the query is unbiased (b1=0), for Gm/Gg it is
-    // the biased tracer with bias b1_query.
-    let query_b1 = match pair_type {
-        PairType::Mm => 0.0,
-        PairType::Gm | PairType::Gg => b1_query,
-    };
-    let pass = doroshkevich_tilted_pass(
-        sigma_s, alpha, beta, query_b1, &j_grid, params.n_gauss, params.l_range,
+    let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
+    let sigma_lin_sq = sigma_s * sigma_s;
+
+    // Precompute ⟨s²⟩ at σ_s for the bias weight's subtraction term.
+    let cross = crate::doroshkevich::doroshkevich_unbiased_cross_moments(
+        sigma_s, params.n_gauss, params.l_range,
     );
 
-    // Query-side PDF choice: Mm uses volume-weighted, Gm/Gg use mass-weighted.
+    // Query-side effective bias: Mm → unbiased; Gm/Gg → bias_query.
+    let query_bias = match pair_type {
+        PairType::Mm => BiasParams::UNBIASED,
+        PairType::Gm | PairType::Gg => bias_query,
+    };
+
+    let pass = crate::doroshkevich::doroshkevich_biased_polynomial_pass(
+        sigma_s, alpha_pt, beta_pt, query_bias,
+        sigma_lin_sq, cross.mean_s2,
+        &j_grid, params.n_gauss, params.l_range,
+    );
+
+    // Query-side PDF choice: Mm uses p_V (volume-weighted around random point);
+    // Gm/Gg use p_M (mass-weighted = galaxy-centred).
     let query_pdf: &[f64] = match pair_type {
-        PairType::Mm => &pass.pdf_v,
-        PairType::Gm | PairType::Gg => &pass.pdf_m,
+        PairType::Mm => &pass.pdf_v_g,
+        PairType::Gm | PairType::Gg => &pass.pdf_m_g,
     };
     let query_cdf = cdf_from_pdf(query_pdf, &j_grid);
 
-    // Neighbour-side: for Gg, each bin's effective Jacobian threshold is
-    // j₀(r) × (1 + b₁_neighbour × ⟨I₁ | J⟩). For Mm/Gm we have b1_neighbour=0
-    // so the factor is 1 and the threshold is simply j₀(r).
+    // Neighbour-count enhancement for Gg: per-bin threshold
+    // J ≤ j₀(r) × (1 + b₁_n × ⟨I₁ | J⟩).
     let cdf: Vec<f64> = r_values.iter().map(|&r| {
         let j0 = (r / r_lag).powi(3);
         match pair_type {
             PairType::Mm | PairType::Gm => interp_cdf(&j_grid, &query_cdf, j0),
             PairType::Gg => {
-                // Apply per-bin bias-enhanced threshold: sum p(J) over bins
-                // where J ≤ j₀ × (1 + b₁_n × ⟨I₁|J⟩). Use trapezoid fraction
-                // for the boundary bin.
                 let dj = j_grid[1] - j_grid[0];
                 let mut acc = 0.0;
                 for (i, &j_bin) in j_grid.iter().enumerate() {
                     let i1_bin = pass.mean_i1_given_j[i];
-                    let j_thresh = j0 * (1.0 + b1_neighbour * i1_bin);
+                    let j_thresh = j0 * (1.0 + bias_neighbour.b1 * i1_bin);
                     if j_bin + 0.5 * dj <= j_thresh {
                         acc += query_pdf[i] * dj;
                     } else if j_bin - 0.5 * dj < j_thresh {
-                        // Partial bin: linear fraction.
                         let frac = (j_thresh - (j_bin - 0.5 * dj)) / dj;
                         acc += query_pdf[i] * dj * frac.clamp(0.0, 1.0);
                     }
@@ -519,10 +547,12 @@ pub fn knn_cdf_tilted(
     }).collect();
 
     TiltedKnnPrediction {
-        k, r_lag, sigma_s, alpha, beta,
+        k, r_lag, sigma_s, alpha: alpha_pt, beta: beta_pt,
         achieved_var: ach_var, achieved_s3: ach_s3,
         r_values: r_values.to_vec(), cdf,
-        j_grid, pdf_v: pass.pdf_v, pdf_m: pass.pdf_m,
+        j_grid,
+        pdf_v: pass.pdf_v_g.clone(),
+        pdf_m: pass.pdf_m_g.clone(),
     }
 }
 
@@ -536,7 +566,7 @@ pub fn rknn_cdf_tilted(
 }
 
 /// D-kNN (galaxy-matter) CDF — thin wrapper with `PairType::Gm`, biased
-/// query + matter neighbours.
+/// query + matter neighbours (b₁-only).
 pub fn dknn_cdf_tilted(
     k: usize, nbar_ref: f64, sigma2_j: f64, s3: f64, b1: f64,
     r_values: &[f64], params: &TiltedKnnParams,
@@ -813,6 +843,96 @@ mod tests {
             assert!((p - analytic).abs() < 0.01,
                     "k=1 σ→0 Poisson CDF at r={:.1}: {} vs Erlang {}", r, p, analytic);
         }
+    }
+
+    // ─── Bias-expansion tests ────────────────────────────────────────────
+
+    #[test]
+    fn bias_expansion_zero_equals_unbiased() {
+        use crate::doroshkevich::{
+            doroshkevich_biased_polynomial_pass,
+            doroshkevich_tilted_pass, doroshkevich_unbiased_cross_moments,
+            uniform_j_grid, BiasParams,
+        };
+        let sigma = 0.8_f64;
+        let cross = doroshkevich_unbiased_cross_moments(sigma, 80, 6.0);
+        let j_grid = uniform_j_grid(-1.0, 6.0, 400);
+
+        let biased = doroshkevich_biased_polynomial_pass(
+            sigma, 0.0, 0.0, BiasParams::UNBIASED, sigma * sigma, cross.mean_s2,
+            &j_grid, 80, 6.0,
+        );
+        let untilted = doroshkevich_tilted_pass(sigma, 0.0, 0.0, 0.0, &j_grid, 80, 6.0);
+
+        // At b1=b2=bs2=0 the biased weight is identically 1. The biased pass
+        // must reproduce the untilted pass to machine precision.
+        for (p_a, p_b) in biased.pdf_v_g.iter().zip(untilted.pdf_v.iter()) {
+            assert!((p_a - p_b).abs() < 1e-10,
+                    "p_V differs: biased {} vs untilted {}", p_a, p_b);
+        }
+        assert!((biased.variance_g - untilted.variance).abs() / untilted.variance < 1e-10);
+        assert!((biased.s3_g - untilted.s3).abs() / untilted.s3.abs() < 1e-9);
+    }
+
+    #[test]
+    fn cross_moments_vanish_in_gaussian_limit() {
+        // For a Gaussian random field, ⟨δ × δ²⟩ = 0 and ⟨δ × s²⟩ = 0 at the
+        // same point. The Doroshkevich cross-moments M₁₂ = ⟨(J−1) I₁²⟩ and
+        // M_{s²} should vanish as σ → 0 (where J−1 ≈ −I₁).
+        use crate::doroshkevich::doroshkevich_unbiased_cross_moments;
+        for &sigma in &[0.05_f64, 0.10, 0.15] {
+            let m = doroshkevich_unbiased_cross_moments(sigma, 80, 6.0);
+            // M ~ O(σ⁴) (cumulant of 4 Gaussian fields → disconnected = 0,
+            // connected at first sub-leading order = σ⁴).
+            let scale = sigma.powi(4);
+            assert!(m.m12.abs() < 10.0 * scale,
+                    "M₁₂ should be O(σ⁴) in Gaussian limit; σ={} M₁₂={} σ⁴={}",
+                    sigma, m.m12, scale);
+            assert!(m.m_s2.abs() < 10.0 * scale,
+                    "M_{{s²}} should be O(σ⁴) in Gaussian limit; σ={} M_{{s²}}={}",
+                    sigma, m.m_s2);
+        }
+    }
+
+    #[test]
+    fn bias_estimator_contamination_by_b2() {
+        // The naive estimator b1_apparent = −ξ̄/σ² is contaminated at O(b₂ σ²)
+        // when the truth has b₂ > 0. Set b1=2, b2=1, and check the naive
+        // estimator differs from b1=2 by a non-trivial amount at R=10.
+        use crate::{Cosmology, Workspace};
+        use crate::integrals::{IntegrationParams, sigma2_tree_ws, xi_bar_ws};
+        use crate::doroshkevich::{
+            doroshkevich_unbiased_cross_moments, xibar_tree_bias_expanded, BiasParams,
+        };
+
+        let cosmo = Cosmology::planck2018();
+        let mut ws = Workspace::new(4000);
+        ws.update_cosmology(&cosmo);
+        let ip = IntegrationParams::fast();
+
+        let r = 10.0;
+        let sigma2_lin = sigma2_tree_ws(r, &ws, &ip);
+        let xibar_lin = xi_bar_ws(r, &ws, &ip);
+        let sigma_s = sigma2_lin.sqrt();
+        let cross = doroshkevich_unbiased_cross_moments(sigma_s, 80, 6.0);
+
+        let bias_true = BiasParams::coevolution(2.0, 1.0);
+        // ξ̄(R) with full bias expansion (use ξ̄_L as the "σ²_L" proxy since
+        // at tree level both enter with single W).
+        let xibar_full = xibar_tree_bias_expanded(xibar_lin, 1.0, &cross, &bias_true);
+        // Naive estimator: b₁_naive = −ξ̄ / ξ̄_lin (or equivalently over σ² for
+        // the variance-bearing quantity). At R=10 σ²_lin ~ 0.48, so the b₂M₁₂
+        // contribution is non-trivial.
+        let b1_naive = -xibar_full / xibar_lin;
+        println!("b1_true={} b1_naive={:.3}  diff={:+.3}",
+                 bias_true.b1, b1_naive, b1_naive - bias_true.b1);
+        assert!(b1_naive != bias_true.b1,
+                "naive estimator must differ from true b₁ when b₂≠0");
+        // Difference should be a significant fraction — O(b₂ × M₁₂ / ξ̄_lin).
+        let diff_frac = (b1_naive - bias_true.b1).abs() / bias_true.b1;
+        assert!(diff_frac > 0.02,
+                "b₂=1 contamination should give >2% shift in b₁_apparent at R=10, got {:.3}%",
+                diff_frac * 100.0);
     }
 
     #[test]

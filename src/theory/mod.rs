@@ -8,6 +8,8 @@ pub use pt::{
     knn_to_radius, mass_to_radius, radius_to_mass, radius_to_k_eff,
     sigma2_j_detailed, sigma2_j_at_masses, sigma2_j_plot,
     xibar_j_full, xibar_j_plot, xibar_j_full_rsd, xibar_j_plot_rsd,
+    xibar_j_full_bias, xibar_j_plot_bias,
+    xibar_j_full_rsd_bias, xibar_j_plot_rsd_bias,
 };
 pub use pt::integrals::{IntegrationParams, RsdParams, BispecIntegrals};
 pub use pt::knn_cdf::{
@@ -17,7 +19,8 @@ pub use pt::knn_cdf::{
     dknn_cdf_biased,
     multi_k_rknn_cdfs, multi_k_dknn_cdfs,
     TiltedKnnParams, TiltedKnnPrediction, PairType,
-    rknn_cdf_tilted, dknn_cdf_tilted, knn_cdf_tilted, poisson_correct_cdf,
+    rknn_cdf_tilted, dknn_cdf_tilted, knn_cdf_tilted, knn_cdf_tilted_bias,
+    poisson_correct_cdf,
 };
 pub use pt::doroshkevich::{
     doroshkevich_cdf, doroshkevich_cdf_biased,
@@ -25,6 +28,9 @@ pub use pt::doroshkevich::{
     find_sigma_eff,
     TiltedPass, doroshkevich_tilted_pass, doroshkevich_tilted_moments,
     fit_tilt_to_moments, cdf_from_pdf, uniform_j_grid,
+    UnbiasedCrossMoments, doroshkevich_unbiased_cross_moments,
+    BiasParams, BiasedPass, doroshkevich_biased_polynomial_pass,
+    xibar_tree_bias_expanded,
 };
 
 use pt::integrals::xi_bar_ws;

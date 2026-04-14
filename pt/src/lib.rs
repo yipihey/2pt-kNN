@@ -504,13 +504,19 @@ pub fn sigma2_j_plot_at_masses(
 pub struct XibarJDetailed {
     /// Smoothing radius R [Mpc/h].
     pub r: f64,
-    /// Linear bias used.
+    /// Linear bias b₁ used (tracer-matter cross-correlation coefficient).
     pub b1: f64,
+    /// Quadratic bias b₂ used (Lagrangian bias expansion).
+    pub b2: f64,
+    /// Tidal bias b_{s²} used (Lagrangian bias expansion).
+    pub bs2: f64,
     /// Growth rate f used (0 in real-space runs).
     pub f_growth: f64,
-    /// Tree-level: -b₁ × K₁ × ξ̄_L(R) (real-space: -b₁ ξ̄_L).
+    /// Tree-level: −K₁ b₁ σ²_L + b₂ M₁₂ + b_{s²} M_{s²}(R).
     pub xibar_tree: f64,
     /// Exact Zel'dovich baseline: ⟨J-1⟩ from biased Doroshkevich at σ_s.
+    /// (Currently uses b₁ exponential tilt; b₂/b_{s²} tilts deferred to
+    /// polynomial-weight PDF path — see `doroshkevich_biased_polynomial_pass`.)
     pub xibar_zel: f64,
     /// One-loop P₁₃ correction (leading-order K₁ factor in RSD).
     pub xibar_1loop: f64,
@@ -520,6 +526,10 @@ pub struct XibarJDetailed {
     pub sigma2_lin: f64,
     /// Expansion parameter ε = (3/7)² σ²_s for convergence diagnostic.
     pub epsilon: f64,
+    /// Unbiased cross-moment M₁₂(R) = ⟨(J−1) I₁²⟩_Zel. Enters ξ̄ at O(b₂).
+    pub m12: f64,
+    /// Unbiased cross-moment M_{s²}(R). Enters ξ̄ at O(b_{s²}).
+    pub m_s2: f64,
 }
 
 /// Compute ξ̄_J at a single radius with full three-layer prediction.
@@ -550,14 +560,16 @@ fn xibar_j_integration_params() -> (IntegrationParams, IntegrationParams) {
 /// Core single-radius ξ̄_J computation using fully FFTLog-based smoothed integrals.
 /// All R-dependent integrals go through the xi_tables (one-time precomputed).
 ///
+/// The tree-level biased prediction uses the full Lagrangian bias expansion:
+///   ξ̄_tree = −b₁ K₁ ξ̄_L + b₂ M₁₂ + b_{s²} M_{s²}
+/// where M₁₂ and M_{s²} are Zel'dovich cross-moments computed at σ_s.
+///
 /// When `rsd` is `Some(f)`, apply Kaiser enhancement:
-///   σ²_s = K₂ × σ²_L,   ξ̄_tree = -b₁ × K₁ × ξ̄_L,   ε = (3/7)² σ²_s
-/// and apply K₁ as the leading-order RSD factor on the one-loop P₁₃ (the
-/// cross-spectrum analogue of the K₂ counterterm factor used in σ²_J).
+///   σ²_s = K₂ × σ²_L,   K₁ = 1 + f/3,   ε = (3/7)² σ²_s.
 fn xibar_j_with_workspace(
     ws: &Workspace, xi_tables: &fftlog::XiTables,
     ip_hires: &IntegrationParams, ip_loop: &IntegrationParams,
-    r: f64, b1: f64, n_corrections: usize,
+    r: f64, bias: doroshkevich::BiasParams, n_corrections: usize,
     rsd: Option<&integrals::RsdParams>,
 ) -> XibarJDetailed {
     // Real-space ingredients (always from FFTLog tree-level tables)
@@ -569,15 +581,26 @@ fn xibar_j_with_workspace(
     let k2 = integrals::kaiser_sigma2(f_growth);
     let k1 = integrals::kaiser_xibar(f_growth);
 
-    // σ²_s (Kaiser-enhanced) — drives Doroshkevich and ε
+    // σ²_s (Kaiser-enhanced) — drives Doroshkevich, cross-moments, and ε.
     let sigma2_s = k2 * sigma2_lin_real;
     let sigma_s = sigma2_s.max(0.0).sqrt();
 
-    // Tree level: -b₁ × K₁ × ξ̄_L
-    let xibar_tree = -b1 * k1 * xi_bar_real;
+    // Unbiased cross-moments at σ_s — for b₂ and b_{s²} tree pieces.
+    let cross = doroshkevich::doroshkevich_unbiased_cross_moments(sigma_s, 80, 6.0);
 
-    // Layer 1: exact Zel'dovich with biased Doroshkevich at σ_s
-    let xibar_zel = doroshkevich::doroshkevich_xibar_biased(sigma_s, b1, 80, 6.0);
+    // Tree level: full Lagrangian bias expansion.
+    // Matter piece −b₁ K₁ ξ̄_L uses the SINGLE-W ξ̄, consistent with the
+    // cross-correlation structure we were already using in the b₁-only code.
+    let xibar_tree_b1 = -bias.b1 * k1 * xi_bar_real;
+    let xibar_tree_b2 = bias.b2 * cross.m12;
+    let xibar_tree_bs2 = bias.bs2 * cross.m_s2;
+    let xibar_tree = xibar_tree_b1 + xibar_tree_b2 + xibar_tree_bs2;
+
+    // Layer 1: exact Zel'dovich with biased Doroshkevich at σ_s.
+    // NOTE: currently uses the b₁-only exponential tilt; b₂/b_{s²} tilts are
+    // implemented in the polynomial-weight PDF path used by the tilted-PDF
+    // kNN predictions. This ξ̄_zel therefore only uses b₁.
+    let xibar_zel = doroshkevich::doroshkevich_xibar_biased(sigma_s, bias.b1, 80, 6.0);
 
     // Layer 2: one-loop P₁₃ (single W). Leading-order RSD enhancement: K₁.
     let xibar_1loop_raw_real = if let Some(ref xi_p13) = xi_tables.xi_p13_eff {
@@ -585,7 +608,7 @@ fn xibar_j_with_workspace(
     } else {
         -1.070 * integrals::xibar_p13_raw_ws(r, ws, ip_loop)
     };
-    let xibar_1loop = b1 * k1 * xibar_1loop_raw_real;
+    let xibar_1loop = bias.b1 * k1 * xibar_1loop_raw_real;
     let _ = ip_hires;  // reserved for fallback paths
 
     // Layer 3: geometric series in ε = (3/7)² σ²_s
@@ -604,43 +627,63 @@ fn xibar_j_with_workspace(
     };
 
     XibarJDetailed {
-        r, b1, f_growth,
+        r,
+        b1: bias.b1, b2: bias.b2, bs2: bias.bs2, f_growth,
         xibar_tree, xibar_zel, xibar_1loop, xibar_full,
-        sigma2_lin: sigma2_s,   // σ²_s exposed (= σ²_L in real space)
+        sigma2_lin: sigma2_s,
         epsilon: eps,
+        m12: cross.m12, m_s2: cross.m_s2,
     }
 }
 
-/// Real-space ξ̄_J prediction at a single radius (three-layer).
+/// Real-space ξ̄_J prediction at a single radius (three-layer, b₁ only).
 pub fn xibar_j_full(
     cosmo: &Cosmology, r: f64, b1: f64, n_corrections: usize,
+) -> XibarJDetailed {
+    xibar_j_full_bias(cosmo, r, doroshkevich::BiasParams::b1_only(b1), n_corrections)
+}
+
+/// Real-space ξ̄_J prediction at a single radius with full Lagrangian bias.
+pub fn xibar_j_full_bias(
+    cosmo: &Cosmology, r: f64, bias: doroshkevich::BiasParams, n_corrections: usize,
 ) -> XibarJDetailed {
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
-    xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, b1, n_corrections, None)
+    xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, bias, n_corrections, None)
 }
 
-/// Redshift-space ξ̄_J prediction at a single radius.
-///
-/// Applies Kaiser-factor enhancement to the real-space three-layer prediction:
-/// σ²_s = K₂ × σ²_L (drives Doroshkevich and ε), K₁ on tree-level ξ̄, and K₁
-/// as the leading-order RSD factor on the one-loop P₁₃ correction.
+/// Redshift-space ξ̄_J prediction at a single radius (b₁-only).
 pub fn xibar_j_full_rsd(
     cosmo: &Cosmology, r: f64, b1: f64, rsd: &integrals::RsdParams,
     n_corrections: usize,
 ) -> XibarJDetailed {
+    xibar_j_full_rsd_bias(cosmo, r, doroshkevich::BiasParams::b1_only(b1), rsd, n_corrections)
+}
+
+/// Redshift-space ξ̄_J prediction with full Lagrangian bias.
+pub fn xibar_j_full_rsd_bias(
+    cosmo: &Cosmology, r: f64, bias: doroshkevich::BiasParams,
+    rsd: &integrals::RsdParams, n_corrections: usize,
+) -> XibarJDetailed {
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
-    xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, b1, n_corrections, Some(rsd))
+    xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, bias, n_corrections, Some(rsd))
 }
 
-/// Compute ξ̄_J on a grid of radii for plotting (real space).
+/// Compute ξ̄_J on a grid of radii (real space, b₁-only).
 pub fn xibar_j_plot(
     cosmo: &Cosmology, radii: &[f64], b1: f64, n_corrections: usize,
+) -> Vec<XibarJDetailed> {
+    xibar_j_plot_bias(cosmo, radii, doroshkevich::BiasParams::b1_only(b1), n_corrections)
+}
+
+/// Compute ξ̄_J on a grid of radii with full Lagrangian bias.
+pub fn xibar_j_plot_bias(
+    cosmo: &Cosmology, radii: &[f64], bias: doroshkevich::BiasParams, n_corrections: usize,
 ) -> Vec<XibarJDetailed> {
     use rayon::prelude::*;
     let (ip_hires, ip_loop) = xibar_j_integration_params();
@@ -649,15 +692,23 @@ pub fn xibar_j_plot(
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
     radii.par_iter()
         .map(|&r| xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop,
-                                         r, b1, n_corrections, None))
+                                         r, bias, n_corrections, None))
         .collect()
 }
 
-/// Compute ξ̄_J in redshift space on a grid of radii for plotting.
+/// Compute ξ̄_J in redshift space on a grid of radii (b₁-only).
 pub fn xibar_j_plot_rsd(
     cosmo: &Cosmology, radii: &[f64], b1: f64, rsd: &integrals::RsdParams,
     n_corrections: usize,
 ) -> Vec<XibarJDetailed> {
+    xibar_j_plot_rsd_bias(cosmo, radii, doroshkevich::BiasParams::b1_only(b1), rsd, n_corrections)
+}
+
+/// Compute ξ̄_J in redshift space with full Lagrangian bias.
+pub fn xibar_j_plot_rsd_bias(
+    cosmo: &Cosmology, radii: &[f64], bias: doroshkevich::BiasParams,
+    rsd: &integrals::RsdParams, n_corrections: usize,
+) -> Vec<XibarJDetailed> {
     use rayon::prelude::*;
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
@@ -665,7 +716,7 @@ pub fn xibar_j_plot_rsd(
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
     radii.par_iter()
         .map(|&r| xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop,
-                                         r, b1, n_corrections, Some(rsd)))
+                                         r, bias, n_corrections, Some(rsd)))
         .collect()
 }
 

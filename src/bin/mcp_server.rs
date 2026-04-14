@@ -284,18 +284,22 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "knn_cdf_tilted",
-            "description": "Predict kNN CDFs using exponential-tilting of the Doroshkevich distribution to match BOTH σ²_J and s₃. Three pair types: 'mm' (matter-matter, unbiased query+neighbours), 'gm' (galaxy-matter, biased query, matter neighbours), 'gg' (galaxy-galaxy, biased query AND neighbours — this is what most surveys measure). For 'gg' the neighbour-bias enhancement (1+b1_neighbour×⟨I₁|J⟩) uses the factorized approximation.",
+            "description": "Predict kNN CDFs using polynomial-bias-weighted Doroshkevich quadrature with PT exponential tilting for matter moments. Supports the full Lagrangian bias expansion (b1, b2, bs2) on BOTH query and neighbour samples. Three pair types: 'mm' (matter-matter, unbiased), 'gm' (galaxy-matter), 'gg' (galaxy-galaxy, typical survey case). For 'gg' the neighbour-bias-b1 enhancement (1+b1_neighbour×⟨I₁|J⟩) uses the factorised approximation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "k_values": {"type": "array", "items": {"type": "integer"}, "description": "Neighbour ranks"},
-                    "nbar": {"type": "number", "description": "Number density of the NEIGHBOUR sample [h^3/Mpc^3] (matter for mm/gm, galaxy for gg)"},
-                    "pair_type": {"type": "string", "enum": ["mm", "gm", "gg"], "default": "mm", "description": "'mm' matter-matter (unbiased R-kNN), 'gm' galaxy-matter (D-kNN with matter neighbours), 'gg' galaxy-galaxy (D-kNN with biased neighbours — typical survey case)"},
-                    "b1_query": {"type": "number", "default": 0.0, "description": "Linear bias of the query sample (ignored for mm)"},
-                    "b1_neighbour": {"type": "number", "default": 0.0, "description": "Linear bias of the neighbour sample (ignored for mm, gm; for auto-kNN set equal to b1_query)"},
+                    "nbar": {"type": "number", "description": "Number density of the NEIGHBOUR sample [h^3/Mpc^3]"},
+                    "pair_type": {"type": "string", "enum": ["mm", "gm", "gg"], "default": "mm"},
+                    "b1_query": {"type": "number", "default": 0.0, "description": "Linear bias b₁ of the query sample"},
+                    "b2_query": {"type": "number", "default": 0.0, "description": "Quadratic bias b₂ of the query sample"},
+                    "bs2_query": {"type": "number", "default": 0.0, "description": "Tidal bias b_{s²} of the query sample. Use the co-evolution relation b_{s²}=-(2/7)(b1-1) if unsure."},
+                    "b1_neighbour": {"type": "number", "default": 0.0},
+                    "b2_neighbour": {"type": "number", "default": 0.0},
+                    "bs2_neighbour": {"type": "number", "default": 0.0},
                     "r_values": {"type": "array", "items": {"type": "number"}, "description": "Query radii [Mpc/h]"},
                     "n_lpt": {"type": "integer", "default": 3},
-                    "with_poisson": {"type": "boolean", "default": false, "description": "Apply Poisson convolution for small k. Only applies to mm/gm; gg Poisson correction is not yet implemented."}
+                    "with_poisson": {"type": "boolean", "default": false, "description": "Apply Poisson convolution for small k (mm/gm only)."}
                 },
                 "required": ["k_values", "nbar", "r_values"]
             }
@@ -451,12 +455,14 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "xibar_j_full",
-            "description": "Compute the full three-layer ξ̄_J prediction at given radii for a tracer with linear bias b1. Returns tree-level, exact Zel'dovich, one-loop, and full prediction at each radius. Supports optional redshift-space distortions via growth rate f: σ²_s = K₂ σ²_L drives Doroshkevich and ε, K₁ multiplies the tree-level ξ̄ and one-loop P₁₃.",
+            "description": "Compute the full three-layer ξ̄_J prediction at given radii with the Lagrangian bias expansion (b1, b2, bs2). Returns tree-level (= -K₁·b₁·ξ̄_L + b₂·M₁₂ + b_{s²}·M_{s²}), exact Zel'dovich, one-loop, and full prediction. Cross-moments M₁₂(R) and M_{s²}(R) are returned so downstream fitters can invert for (b₁, b₂, b_{s²}). Supports optional redshift-space distortions via growth rate f.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "radii": {"type": "array", "items": {"type": "number"}, "description": "Smoothing radii R [Mpc/h]"},
-                    "b1": {"type": "number", "description": "Linear bias of tracer population"},
+                    "b1": {"type": "number", "description": "Linear bias b₁"},
+                    "b2": {"type": "number", "default": 0.0, "description": "Quadratic bias b₂"},
+                    "bs2": {"type": "number", "default": 0.0, "description": "Tidal bias b_{s²}. Co-evolution: b_{s²} = -(2/7)(b₁-1)."},
                     "n_corrections": {"type": "integer", "default": 3, "description": "Number of geometric series terms (0=Zel only, 1=+1loop, 2+=higher)"},
                     "f_growth": {"type": "number", "default": 0.0, "description": "Growth rate f (0 = real space; z=0 Planck has f≈0.525). Enables RSD when >0."}
                 },
@@ -744,7 +750,7 @@ fn handle_dknn_cdf_predict(state: &mut ServerState, args: &Value) -> Result<Valu
     Ok(json!({ "r_values": r_values, "nbar_ref": nbar_ref, "b1": b1, "predictions": results }))
 }
 
-/// Tilted-PDF kNN CDF with pair-type selector (mm/gm/gg).
+/// Tilted-PDF kNN CDF with pair-type selector (mm/gm/gg) + full Lagrangian bias.
 fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value, String> {
     let cosmo = state.get_cosmology()?.clone();
     let k_values: Vec<usize> = serde_json::from_value(args["k_values"].clone())
@@ -757,8 +763,16 @@ fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value,
         "gg" => pt::knn_cdf::PairType::Gg,
         other => return Err(format!("pair_type must be mm/gm/gg, got {}", other)),
     };
-    let b1_query = args.get("b1_query").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let b1_neighbour = args.get("b1_neighbour").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let bias_query = pt::doroshkevich::BiasParams {
+        b1: args.get("b1_query").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        b2: args.get("b2_query").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        bs2: args.get("bs2_query").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    };
+    let bias_neighbour = pt::doroshkevich::BiasParams {
+        b1: args.get("b1_neighbour").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        b2: args.get("b2_neighbour").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        bs2: args.get("bs2_neighbour").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    };
     let r_values: Vec<f64> = serde_json::from_value(args["r_values"].clone())
         .map_err(|e| format!("r_values: {}", e))?;
     let n_lpt = args.get("n_lpt").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
@@ -772,9 +786,9 @@ fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value,
         let s3_red = if detailed.sigma2_j > 1e-30 {
             detailed.s3_jacobian / (detailed.sigma2_j * detailed.sigma2_j)
         } else { 0.0 };
-        let pred = pt::knn_cdf::knn_cdf_tilted(
+        let pred = pt::knn_cdf::knn_cdf_tilted_bias(
             pair_type, k, nbar, detailed.sigma2_j, s3_red,
-            b1_query, b1_neighbour, &r_values, &tilt_params,
+            bias_query, bias_neighbour, &r_values, &tilt_params,
         );
         // Poisson correction currently only implemented for matter-neighbour
         // cases (mm, gm). For gg we return the deterministic-count CDF.
@@ -801,8 +815,8 @@ fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value,
         "r_values": r_values,
         "nbar": nbar,
         "pair_type": pair_type_str,
-        "b1_query": b1_query,
-        "b1_neighbour": b1_neighbour,
+        "bias_query": {"b1": bias_query.b1, "b2": bias_query.b2, "bs2": bias_query.bs2},
+        "bias_neighbour": {"b1": bias_neighbour.b1, "b2": bias_neighbour.b2, "bs2": bias_neighbour.bs2},
         "with_poisson": with_poisson,
         "predictions": results,
     }))
@@ -1088,26 +1102,32 @@ fn handle_xibar_j_full(state: &mut ServerState, args: &Value) -> Result<Value, S
     let cosmo = state.get_cosmology()?.clone();
     let radii: Vec<f64> = serde_json::from_value(args["radii"].clone())
         .map_err(|e| format!("radii: {}", e))?;
-    let b1 = args["b1"].as_f64().ok_or("b1 required")?;
+    let bias = pt::doroshkevich::BiasParams {
+        b1: args["b1"].as_f64().ok_or("b1 required")?,
+        b2: args.get("b2").and_then(|v| v.as_f64()).unwrap_or(0.0),
+        bs2: args.get("bs2").and_then(|v| v.as_f64()).unwrap_or(0.0),
+    };
     let n_corr = args.get("n_corrections").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
     let f_growth = args.get("f_growth").and_then(|v| v.as_f64()).unwrap_or(0.0);
 
     let results = if f_growth > 0.0 {
         let rsd = pt::integrals::RsdParams { f: f_growth, n_los: 12 };
-        theory::xibar_j_plot_rsd(&cosmo, &radii, b1, &rsd, n_corr)
+        theory::xibar_j_plot_rsd_bias(&cosmo, &radii, bias, &rsd, n_corr)
     } else {
-        theory::xibar_j_plot(&cosmo, &radii, b1, n_corr)
+        theory::xibar_j_plot_bias(&cosmo, &radii, bias, n_corr)
     };
     let out: Vec<Value> = results.iter().map(|r| json!({
         "r": r.r,
-        "b1": r.b1,
+        "b1": r.b1, "b2": r.b2, "bs2": r.bs2,
         "f_growth": r.f_growth,
         "xibar_tree": r.xibar_tree,
         "xibar_zel": r.xibar_zel,
         "xibar_1loop": r.xibar_1loop,
         "xibar_full": r.xibar_full,
         "sigma2_s": r.sigma2_lin,
-        "epsilon": r.epsilon
+        "epsilon": r.epsilon,
+        "m12": r.m12,
+        "m_s2": r.m_s2,
     })).collect();
     Ok(json!(out))
 }

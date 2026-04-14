@@ -557,6 +557,183 @@ pub fn sigma2_zel_perturbative(sigma2_lin: f64) -> f64 {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Unbiased cross-moments for the Lagrangian bias expansion
+//
+// The Lagrangian bias expansion of the galaxy overdensity is
+//   δ_g = b₁ δ + b₂ (δ² − ⟨δ²⟩) + b_{s²} (s² − ⟨s²⟩)     with s² = (2/3)δ² − 2 I₂
+// Evaluating ⟨(J−1) δ_g⟩ at tree level gives
+//   ξ̄(R) = −K₁ b₁ σ²_L(R) + b₂ M₁₂(R) + b_{s²} M_{s²}(R),
+// where in the code convention I₁ = δ_L, so
+//   M₁₂(R)   = ⟨(J−1) (I₁² − σ²)⟩_Zel = ⟨(J−1) I₁²⟩   [since ⟨J−1⟩ = 0]
+//   M_{s²}(R) = ⟨(J−1) ((2/3)I₁² − 2 I₂ − ⟨s²⟩)⟩_Zel
+//             = (2/3)⟨(J−1) I₁²⟩ − 2⟨(J−1) I₂⟩.
+// Both are computed alongside σ² and s₃ in the same eigenvalue loop.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Raw unbiased moments + cross-moments of the Zel'dovich Jacobian needed for
+/// the Lagrangian bias expansion. All averages are weighted by the Doroshkevich
+/// distribution at the given σ (no PT tilting, no bias weighting).
+#[derive(Clone, Debug)]
+pub struct UnbiasedCrossMoments {
+    pub sigma: f64,
+    /// ⟨J⟩ — sanity check (should be 1 to working precision).
+    pub mean_j: f64,
+    /// Var(J) = σ²_J,Zel(R).
+    pub variance: f64,
+    /// ⟨(J−1) I₁²⟩_Zel. Equals M₁₂(R) since ⟨J−1⟩ = 0.
+    pub m_j_i1_sq: f64,
+    /// ⟨(J−1) I₂⟩_Zel.
+    pub m_j_i2: f64,
+    /// ⟨s²⟩ = ⟨(2/3) I₁² − 2 I₂⟩_Zel.
+    pub mean_s2: f64,
+    /// M₁₂(R) — bias-expansion cross-moment coefficient of b₂.
+    pub m12: f64,
+    /// M_{s²}(R) — bias-expansion cross-moment coefficient of b_{s²}.
+    pub m_s2: f64,
+}
+
+/// Compute unbiased Zel'dovich cross-moments at given σ.
+/// Single eigenvalue loop, shares the same grid as `doroshkevich_moments`.
+pub fn doroshkevich_unbiased_cross_moments(
+    sigma: f64, n_gauss: usize, l_range: f64,
+) -> UnbiasedCrossMoments {
+    if sigma <= 0.0 {
+        return UnbiasedCrossMoments {
+            sigma: 0.0, mean_j: 1.0, variance: 0.0,
+            m_j_i1_sq: 0.0, m_j_i2: 0.0, mean_s2: 0.0,
+            m12: 0.0, m_s2: 0.0,
+        };
+    }
+
+    let (nodes, weights) = gauss_legendre(n_gauss);
+    let sig2 = sigma * sigma;
+
+    let e3_lo = -l_range * sigma;
+    let e3_hi = l_range * sigma;
+    let e3_scale = (e3_hi - e3_lo) / 2.0;
+    let e3_mid = (e3_hi + e3_lo) / 2.0;
+    let gap_hi = 2.0 * l_range * sigma;
+    let gap_scale = gap_hi / 2.0;
+    let gap_mid = gap_hi / 2.0;
+
+    let mut z = 0.0_f64;
+    let mut s1_j = 0.0_f64;         // ⟨J⟩
+    let mut s2_j = 0.0_f64;         // ⟨J²⟩
+    let mut s1_i1sq = 0.0_f64;      // ⟨I₁²⟩
+    let mut s1_i2 = 0.0_f64;        // ⟨I₂⟩
+    let mut s1_ji1sq = 0.0_f64;     // ⟨(J) I₁²⟩
+    let mut s1_ji2 = 0.0_f64;       // ⟨(J) I₂⟩
+
+    for i3 in 0..n_gauss {
+        let e3 = e3_mid + e3_scale * nodes[i3];
+        let w3 = e3_scale * weights[i3];
+        for i2 in 0..n_gauss {
+            let g2 = gap_mid + gap_scale * nodes[i2];
+            if g2 <= 0.0 { continue; }
+            let wg2 = gap_scale * weights[i2];
+            let e2 = e3 + g2;
+            for i1 in 0..n_gauss {
+                let g1 = gap_mid + gap_scale * nodes[i1];
+                if g1 <= 0.0 { continue; }
+                let wg1 = gap_scale * weights[i1];
+                let e1 = e2 + g1;
+
+                let i1_inv = e1 + e2 + e3;
+                let i2_inv = e1 * e2 + e1 * e3 + e2 * e3;
+                let exp_arg = -3.0 * i1_inv * i1_inv / sig2 + 7.5 * i2_inv / sig2;
+                if exp_arg < -200.0 { continue; }
+
+                let vdm = g1 * g2 * (g1 + g2);
+                let fw = exp_arg.exp() * vdm * w3 * wg2 * wg1;
+                let j = (1.0 - e1) * (1.0 - e2) * (1.0 - e3);
+                let i1_sq = i1_inv * i1_inv;
+
+                z += fw;
+                s1_j += fw * j;
+                s2_j += fw * j * j;
+                s1_i1sq += fw * i1_sq;
+                s1_i2 += fw * i2_inv;
+                s1_ji1sq += fw * j * i1_sq;
+                s1_ji2 += fw * j * i2_inv;
+            }
+        }
+    }
+
+    if z <= 0.0 {
+        return UnbiasedCrossMoments {
+            sigma, mean_j: 1.0, variance: 0.0,
+            m_j_i1_sq: 0.0, m_j_i2: 0.0, mean_s2: 0.0,
+            m12: 0.0, m_s2: 0.0,
+        };
+    }
+
+    let mean_j = s1_j / z;
+    let m2 = s2_j / z;
+    let variance = m2 - mean_j * mean_j;
+    let mean_i1sq = s1_i1sq / z;
+    let mean_i2 = s1_i2 / z;
+    let mean_ji1sq = s1_ji1sq / z;
+    let mean_ji2 = s1_ji2 / z;
+
+    // ⟨(J−1) I₁²⟩ = ⟨J I₁²⟩ − ⟨I₁²⟩
+    let m_j_i1_sq = mean_ji1sq - mean_i1sq;
+    // ⟨(J−1) I₂⟩   = ⟨J I₂⟩   − ⟨I₂⟩
+    let m_j_i2 = mean_ji2 - mean_i2;
+    // ⟨s²⟩ = ⟨(2/3)I₁² − 2 I₂⟩
+    let mean_s2 = (2.0 / 3.0) * mean_i1sq - 2.0 * mean_i2;
+
+    // Bias-expansion cross-moments (no subtraction needed since ⟨J−1⟩ = 0).
+    let m12 = m_j_i1_sq;
+    let m_s2 = (2.0 / 3.0) * m_j_i1_sq - 2.0 * m_j_i2;
+
+    UnbiasedCrossMoments {
+        sigma, mean_j, variance,
+        m_j_i1_sq, m_j_i2, mean_s2,
+        m12, m_s2,
+    }
+}
+
+/// Lagrangian bias parameters (b₁, b₂, b_{s²}).
+///
+/// The co-evolution relation b_{s²} = −(2/7)(b₁ − 1) is often adopted for
+/// halos forming from Gaussian initial conditions; `BiasParams::coevolution`
+/// constructs a BiasParams using this.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BiasParams {
+    pub b1: f64,
+    pub b2: f64,
+    pub bs2: f64,
+}
+
+impl BiasParams {
+    /// All biases zero — matter case.
+    pub const UNBIASED: BiasParams = BiasParams { b1: 0.0, b2: 0.0, bs2: 0.0 };
+
+    /// b₁-only, b₂ = b_{s²} = 0. Reproduces the legacy single-bias behavior.
+    pub fn b1_only(b1: f64) -> Self {
+        BiasParams { b1, b2: 0.0, bs2: 0.0 }
+    }
+
+    /// (b₁, b₂) with the co-evolution tidal bias b_{s²} = −(2/7)(b₁ − 1).
+    pub fn coevolution(b1: f64, b2: f64) -> Self {
+        BiasParams { b1, b2, bs2: -(2.0 / 7.0) * (b1 - 1.0) }
+    }
+}
+
+/// Tree-level biased ξ̄ (galaxy-matter cross) including the b₂ and b_{s²}
+/// cross-moments: ξ̄(R) = −K₁ b₁ σ²_L + b₂ M₁₂ + b_{s²} M_{s²}.
+/// `k1_factor` defaults to 1.0 in real space; in RSD use K₁(f) = 1 + f/3.
+#[inline]
+pub fn xibar_tree_bias_expanded(
+    sigma2_lin: f64, k1_factor: f64,
+    cross: &UnbiasedCrossMoments, bias: &BiasParams,
+) -> f64 {
+    -bias.b1 * k1_factor * sigma2_lin
+        + bias.b2 * cross.m12
+        + bias.bs2 * cross.m_s2
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Tilted Doroshkevich: incorporating PT corrections via exponential tilting
 //
 // We deform the Doroshkevich distribution by multiplying by exp(α I₁ + β I₂):
@@ -775,6 +952,239 @@ pub fn doroshkevich_tilted_pass(
         mean_j, variance, mu3: mu3_val, s3: s3_red,
         j_grid: j_grid.to_vec(), pdf_v, pdf_m,
         mean_i1_given_j: mean_i1,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Polynomial-bias-weighted quadrature: exact bias expansion (no approximation)
+//
+// For Lagrangian tracers with (b₁, b₂, b_{s²}), the density contrast is
+//   1 + δ_g = 1 − b₁ I₁ + b₂ (I₁² − σ²) + b_{s²} ((2/3) I₁² − 2 I₂ − ⟨s²⟩).
+// The two subtractions ensure ⟨1 + δ_g⟩ = 1.
+//
+// Polynomial-bias-weighted distribution:
+//   p_g(λ) ∝ p_D_tilted(λ) × w_bias(λ)
+//
+// Two PDFs are tracked:
+//   p_V(J_g) — volume-weighted biased PDF around a RANDOM point that sees
+//              the biased galaxy field. Integrand weight: p × w_bias.
+//   p_M(J_g) — mass-weighted biased PDF around a GALAXY. Integrand weight:
+//              p × w_bias² / J (one w for selecting the galaxy, one for the
+//              mass at that position, divided by J for mass→volume).
+//
+// Where w_bias < 0 (deep in the tails at large bias), the weight is clipped
+// to zero — these are unphysical configurations where the bias expansion has
+// broken down. The moments reported are therefore approximate in those
+// regimes; typical (b₁ ≤ 3, b₂ ≤ 2, |b_{s²}| ≤ 1) bias values keep this
+// clipping negligible.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Output of a polynomial-bias-weighted quadrature pass.
+#[derive(Clone, Debug)]
+pub struct BiasedPass {
+    pub sigma: f64,
+    pub bias: BiasParams,
+    /// PT tilt α used.
+    pub alpha_pt: f64,
+    /// PT tilt β used.
+    pub beta_pt: f64,
+    /// ⟨J⟩_g (galaxy-weighted = volume-weighted × w_bias).
+    pub mean_j_g: f64,
+    /// Var(J) under the volume-weighted biased distribution.
+    pub variance_g: f64,
+    /// ⟨(J−1)³⟩ under the volume-weighted biased distribution.
+    pub mu3_g: f64,
+    /// Reduced skewness s₃_g = μ₃_g / Var_g².
+    pub s3_g: f64,
+    pub j_grid: Vec<f64>,
+    /// Volume-weighted biased PDF p_V,g(J).
+    pub pdf_v_g: Vec<f64>,
+    /// Mass-weighted biased PDF p_M,g(J).
+    pub pdf_m_g: Vec<f64>,
+    /// Conditional ⟨I₁ | J⟩ under p_V,g — for g-g Poisson / neighbour enhancement.
+    pub mean_i1_given_j: Vec<f64>,
+    /// Fraction of quadrature weight that was CLIPPED (w_bias < 0).
+    /// Should be << 1 for typical biases; diagnostic of bias-expansion breakdown.
+    pub clipped_fraction: f64,
+}
+
+/// Polynomial-bias-weighted Doroshkevich quadrature.
+///
+/// Uses the exact polynomial bias weight (no exponential approximation).
+/// The PT tilt (α_pt, β_pt) applies on top of the untilted Doroshkevich core
+/// — set both to zero to use the pure Zel'dovich baseline.
+///
+/// * `sigma_lin` — σ²_L(R) under which the bias expansion's σ² and ⟨s²⟩
+///   subtractions are referenced. For typical usage `sigma_lin = sigma²`
+///   (i.e., the same σ as the distribution).
+/// * `mean_s2` — precomputed ⟨s²⟩ at this σ (from
+///   `doroshkevich_unbiased_cross_moments`). Avoids recomputation when
+///   evaluating many bias combinations.
+pub fn doroshkevich_biased_polynomial_pass(
+    sigma: f64, alpha_pt: f64, beta_pt: f64, bias: BiasParams,
+    sigma_lin: f64, mean_s2: f64,
+    j_grid: &[f64], n_gauss: usize, l_range: f64,
+) -> BiasedPass {
+    let n_bins = j_grid.len();
+    let empty_hist = || vec![0.0; n_bins];
+
+    if sigma <= 0.0 {
+        return BiasedPass {
+            sigma: 0.0, bias, alpha_pt, beta_pt,
+            mean_j_g: 1.0, variance_g: 0.0, mu3_g: 0.0, s3_g: 0.0,
+            j_grid: j_grid.to_vec(), pdf_v_g: empty_hist(), pdf_m_g: empty_hist(),
+            mean_i1_given_j: empty_hist(),
+            clipped_fraction: 0.0,
+        };
+    }
+
+    let dj = if n_bins >= 2 { j_grid[1] - j_grid[0] } else { 1.0 };
+    let j_min_edge = j_grid[0] - 0.5 * dj;
+    let inv_dj = 1.0 / dj;
+
+    let (nodes, weights) = gauss_legendre(n_gauss);
+    let sig2 = sigma * sigma;
+    let sig2_lin = sigma_lin;
+
+    let e3_lo = -l_range * sigma;
+    let e3_hi = l_range * sigma;
+    let e3_scale = (e3_hi - e3_lo) / 2.0;
+    let e3_mid = (e3_hi + e3_lo) / 2.0;
+    let gap_hi = 2.0 * l_range * sigma;
+    let gap_scale = gap_hi / 2.0;
+    let gap_mid = gap_hi / 2.0;
+
+    // Accumulators for volume-weighted BIASED moments (primary use case).
+    let mut z_v = 0.0_f64;
+    let mut z_m = 0.0_f64;
+    let mut s1 = 0.0_f64;
+    let mut s2 = 0.0_f64;
+    let mut s3 = 0.0_f64;
+    let mut pdf_v = empty_hist();
+    let mut pdf_m = empty_hist();
+    let mut i1_w = empty_hist();
+    let mut w_per_bin = empty_hist();
+
+    // Total weight (clipped and total, for clipping diagnostic).
+    let mut total_fw = 0.0_f64;
+    let mut clipped_fw = 0.0_f64;
+
+    for i3 in 0..n_gauss {
+        let e3 = e3_mid + e3_scale * nodes[i3];
+        let w3 = e3_scale * weights[i3];
+        for i2 in 0..n_gauss {
+            let g2 = gap_mid + gap_scale * nodes[i2];
+            if g2 <= 0.0 { continue; }
+            let wg2 = gap_scale * weights[i2];
+            let e2 = e3 + g2;
+            for i1 in 0..n_gauss {
+                let g1 = gap_mid + gap_scale * nodes[i1];
+                if g1 <= 0.0 { continue; }
+                let wg1 = gap_scale * weights[i1];
+                let e1 = e2 + g1;
+
+                let i1_inv = e1 + e2 + e3;
+                let i2_inv = e1 * e2 + e1 * e3 + e2 * e3;
+                let i1_sq = i1_inv * i1_inv;
+
+                let exp_arg = -3.0 * i1_sq / sig2
+                            + 7.5 * i2_inv / sig2
+                            + alpha_pt * i1_inv
+                            + beta_pt * i2_inv;
+                if exp_arg < -200.0 { continue; }
+
+                let vdm = g1 * g2 * (g1 + g2);
+                let fw = exp_arg.exp() * vdm * w3 * wg2 * wg1;
+                total_fw += fw;
+
+                // Polynomial bias weight: 1 + δ_g = 1 − b₁ I₁ + b₂(I₁² − σ²) +
+                //                                 b_{s²}((2/3)I₁² − 2 I₂ − ⟨s²⟩).
+                let s2_op = (2.0 / 3.0) * i1_sq - 2.0 * i2_inv;
+                let w_bias = 1.0
+                           - bias.b1 * i1_inv
+                           + bias.b2 * (i1_sq - sig2_lin)
+                           + bias.bs2 * (s2_op - mean_s2);
+
+                if w_bias <= 0.0 {
+                    // Clip: unphysical negative-density region.
+                    clipped_fw += fw;
+                    continue;
+                }
+
+                let fw_v = fw * w_bias;                  // p_V,g ∝ p × w
+                let fw_m = fw * w_bias * w_bias;         // p_M,g ∝ p × w² / J
+                let j = (1.0 - e1) * (1.0 - e2) * (1.0 - e3);
+
+                z_v += fw_v;
+                s1 += fw_v * j;
+                let jj = j * j;
+                s2 += fw_v * jj;
+                s3 += fw_v * jj * j;
+
+                let bin_ok = j >= j_min_edge && j < j_min_edge + (n_bins as f64) * dj;
+                if j > 0.0 {
+                    let fw_m_per_j = fw_m / j;
+                    z_m += fw_m_per_j;
+                    if bin_ok {
+                        let bin = ((j - j_min_edge) * inv_dj) as usize;
+                        if bin < n_bins {
+                            pdf_v[bin] += fw_v;
+                            pdf_m[bin] += fw_m_per_j;
+                            i1_w[bin] += fw_v * i1_inv;
+                            w_per_bin[bin] += fw_v;
+                        }
+                    }
+                } else if bin_ok {
+                    let bin = ((j - j_min_edge) * inv_dj) as usize;
+                    if bin < n_bins {
+                        pdf_v[bin] += fw_v;
+                        i1_w[bin] += fw_v * i1_inv;
+                        w_per_bin[bin] += fw_v;
+                    }
+                }
+            }
+        }
+    }
+
+    if z_v <= 0.0 {
+        return BiasedPass {
+            sigma, bias, alpha_pt, beta_pt,
+            mean_j_g: 1.0, variance_g: 0.0, mu3_g: 0.0, s3_g: 0.0,
+            j_grid: j_grid.to_vec(), pdf_v_g: empty_hist(), pdf_m_g: empty_hist(),
+            mean_i1_given_j: empty_hist(),
+            clipped_fraction: if total_fw > 0.0 { clipped_fw / total_fw } else { 0.0 },
+        };
+    }
+
+    let mean_j = s1 / z_v;
+    let m2 = s2 / z_v;
+    let m3 = s3 / z_v;
+    let variance_g = m2 - mean_j * mean_j;
+    let mu3_g = m3 - 3.0 * m2 * mean_j + 2.0 * mean_j.powi(3);
+    let s3_g = if variance_g > 1e-30 { mu3_g / (variance_g * variance_g) } else { 0.0 };
+
+    // Normalize PDFs to unit integral.
+    let norm_v = 1.0 / (z_v * dj);
+    for p in pdf_v.iter_mut() { *p *= norm_v; }
+    if z_m > 0.0 {
+        let norm_m = 1.0 / (z_m * dj);
+        for p in pdf_m.iter_mut() { *p *= norm_m; }
+    }
+
+    let mean_i1: Vec<f64> = i1_w.iter().zip(w_per_bin.iter())
+        .map(|(s, w)| if *w > 1e-30 { s / w } else { 0.0 })
+        .collect();
+
+    BiasedPass {
+        sigma, bias, alpha_pt, beta_pt,
+        mean_j_g: mean_j,
+        variance_g,
+        mu3_g,
+        s3_g,
+        j_grid: j_grid.to_vec(),
+        pdf_v_g: pdf_v, pdf_m_g: pdf_m,
+        mean_i1_given_j: mean_i1,
+        clipped_fraction: if total_fw > 0.0 { clipped_fw / total_fw } else { 0.0 },
     }
 }
 

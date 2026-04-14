@@ -11,7 +11,6 @@
 use wgpu::util::DeviceExt;
 
 use crate::estimator::{KnnDistances, KnnDistributions};
-use crate::validation::KnnBackend;
 
 /// GPU kNN backend using wgpu compute shaders.
 pub struct GpuKnn {
@@ -282,28 +281,3 @@ impl GpuKnn {
     }
 }
 
-// Note: GpuKnn implements KnnBackend asynchronously. Since KnnBackend is sync,
-// we provide a wrapper that blocks on the async GPU call. In WASM, the async
-// version is called directly from the async wasm entry point.
-impl KnnBackend for GpuKnn {
-    fn query_distances(
-        &self,
-        data: &[[f64; 3]],
-        queries: &[[f64; 3]],
-        k_max: usize,
-    ) -> KnnDistributions {
-        // On native, use pollster to block. On WASM, this path shouldn't
-        // be used — call query_distances directly in async context.
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            pollster::block_on(self.query_distances(data, queries, k_max))
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (data, queries, k_max);
-            // WASM can't block — this is a fallback that panics.
-            // The WASM entry point should use the async API directly.
-            panic!("Use async GpuKnn::query_distances in WASM context");
-        }
-    }
-}

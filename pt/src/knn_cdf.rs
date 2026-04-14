@@ -358,6 +358,38 @@ use crate::doroshkevich::{
     doroshkevich_tilted_pass, fit_tilt_to_moments, cdf_from_pdf, uniform_j_grid,
 };
 
+/// Pair type for kNN predictions.
+///
+/// The "query sample" is where you drop the query point (centre of the
+/// neighbour search). The "neighbour sample" is what you count neighbours of.
+///
+/// - `Mm` (matter-matter): unbiased query (volume-weighted PDF) + unbiased
+///   matter neighbours. Appropriate for idealized R-kNN statistics of the
+///   underlying matter distribution; not directly a survey observable.
+/// - `Gm` (galaxy-matter): biased tracer query (mass-weighted PDF with the
+///   galaxy bias tilt) + matter neighbours. Rarely directly observable for
+///   galaxy surveys (you'd need a matter field from, e.g., weak lensing).
+/// - `Gg` (galaxy-galaxy): biased tracer query + biased tracer neighbours.
+///   **This is what most galaxy-survey kNN measurements are**, e.g., counting
+///   galaxies in volumes around galaxies. Uses both a query bias `b1_query`
+///   and a neighbour bias `b1_neighbour` (often the same number for
+///   auto-kNN; different for cross-sample kNN).
+///
+/// For the enclosed count we use the standard Lagrangian prescription:
+/// in Eulerian volume V_eul around the query, the neighbour-sample count is
+///   N = n̄_neighbour × V_Lag × (1 + b₁_neighbour × δ_Lag)
+///     = n̄_neighbour × V_eul × (1 + b₁_neighbour × I₁) / J
+/// with I₁_code = δ_L in the Doroshkevich convention. The galaxy-galaxy
+/// Jacobian threshold is therefore J ≤ j₀(r) × (1 + b₁_neighbour × I₁).
+/// We apply this via the factorized approximation: replace I₁ by its
+/// conditional mean ⟨I₁ | J⟩ from the tilted quadrature.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PairType {
+    Mm,
+    Gm,
+    Gg,
+}
+
 /// Result of a tilted-PDF kNN prediction at one k value.
 #[derive(Clone, Debug)]
 pub struct TiltedKnnPrediction {
@@ -413,38 +445,77 @@ impl Default for TiltedKnnParams {
     }
 }
 
-/// R-kNN CDF prediction (random-point → nearest-neighbour distance) with
-/// exponential-tilting PT corrections. Matches both σ²_J and s₃.
+/// Unified tilted kNN CDF with pair-type selector.
 ///
-/// * `k` — neighbour rank
-/// * `nbar` — mean number density of the tracer [h³/Mpc³]
-/// * `sigma2_j` — corrected σ²_J(R_Lag) from the PT pipeline
-/// * `s3` — corrected reduced skewness s₃(R_Lag)
-/// * `r_values` — query radii [Mpc/h]
-pub fn rknn_cdf_tilted(
+/// * `pair_type` — which sample is at the query, which is counted.
+/// * `k` — neighbour rank.
+/// * `nbar` — number density of the NEIGHBOUR sample [h³/Mpc³] (matter for
+///            `Mm`/`Gm`, galaxies for `Gg`).
+/// * `sigma2_j`, `s3` — target second and third cumulants from PT.
+/// * `b1_query` — bias of the query sample (0 for `Mm`).
+/// * `b1_neighbour` — bias of the neighbour sample (0 for `Mm`, `Gm`).
+/// * `r_values` — query radii [Mpc/h].
+///
+/// Returns the full prediction including tilt parameters, PDFs, and CDFs.
+pub fn knn_cdf_tilted(
+    pair_type: PairType,
     k: usize, nbar: f64, sigma2_j: f64, s3: f64,
+    b1_query: f64, b1_neighbour: f64,
     r_values: &[f64], params: &TiltedKnnParams,
 ) -> TiltedKnnPrediction {
     let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
-    // Doroshkevich scale used inside the tilt: sqrt(target variance is the
-    // post-tilt σ²_J, so we seed the tilt from sigma_s = √(target_var)).
-    // The fit handles the rest.
     let sigma_s = sigma2_j.max(0.0).sqrt();
 
     let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
         sigma_s, sigma2_j, s3, params.n_gauss, params.l_range,
         params.max_iter, params.tol,
     );
-
     let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
-    let pass = doroshkevich_tilted_pass(
-        sigma_s, alpha, beta, 0.0, &j_grid, params.n_gauss, params.l_range,
-    );
-    let cdf_v = cdf_from_pdf(&pass.pdf_v, &j_grid);
 
-    let cdf = r_values.iter().map(|&r| {
+    // Query-side tilt: for Mm the query is unbiased (b1=0), for Gm/Gg it is
+    // the biased tracer with bias b1_query.
+    let query_b1 = match pair_type {
+        PairType::Mm => 0.0,
+        PairType::Gm | PairType::Gg => b1_query,
+    };
+    let pass = doroshkevich_tilted_pass(
+        sigma_s, alpha, beta, query_b1, &j_grid, params.n_gauss, params.l_range,
+    );
+
+    // Query-side PDF choice: Mm uses volume-weighted, Gm/Gg use mass-weighted.
+    let query_pdf: &[f64] = match pair_type {
+        PairType::Mm => &pass.pdf_v,
+        PairType::Gm | PairType::Gg => &pass.pdf_m,
+    };
+    let query_cdf = cdf_from_pdf(query_pdf, &j_grid);
+
+    // Neighbour-side: for Gg, each bin's effective Jacobian threshold is
+    // j₀(r) × (1 + b₁_neighbour × ⟨I₁ | J⟩). For Mm/Gm we have b1_neighbour=0
+    // so the factor is 1 and the threshold is simply j₀(r).
+    let cdf: Vec<f64> = r_values.iter().map(|&r| {
         let j0 = (r / r_lag).powi(3);
-        interp_cdf(&j_grid, &cdf_v, j0)
+        match pair_type {
+            PairType::Mm | PairType::Gm => interp_cdf(&j_grid, &query_cdf, j0),
+            PairType::Gg => {
+                // Apply per-bin bias-enhanced threshold: sum p(J) over bins
+                // where J ≤ j₀ × (1 + b₁_n × ⟨I₁|J⟩). Use trapezoid fraction
+                // for the boundary bin.
+                let dj = j_grid[1] - j_grid[0];
+                let mut acc = 0.0;
+                for (i, &j_bin) in j_grid.iter().enumerate() {
+                    let i1_bin = pass.mean_i1_given_j[i];
+                    let j_thresh = j0 * (1.0 + b1_neighbour * i1_bin);
+                    if j_bin + 0.5 * dj <= j_thresh {
+                        acc += query_pdf[i] * dj;
+                    } else if j_bin - 0.5 * dj < j_thresh {
+                        // Partial bin: linear fraction.
+                        let frac = (j_thresh - (j_bin - 0.5 * dj)) / dj;
+                        acc += query_pdf[i] * dj * frac.clamp(0.0, 1.0);
+                    }
+                }
+                acc.clamp(0.0, 1.0)
+            }
+        }
     }).collect();
 
     TiltedKnnPrediction {
@@ -455,41 +526,22 @@ pub fn rknn_cdf_tilted(
     }
 }
 
-/// D-kNN CDF prediction (galaxy-centred → nearest-neighbour distance) with
-/// exponential-tilting PT corrections + bias shift. Uses the mass-weighted PDF
-/// tilted with α_effective = α + 6 b₁.
-///
-/// The α, β are fit from the UNBIASED tilted distribution matching σ²_J and s₃.
-/// Bias then adds +6 b₁ to α at PDF-evaluation time.
+/// R-kNN (matter-matter) CDF — thin wrapper over `knn_cdf_tilted` with
+/// `PairType::Mm`, no biases.
+pub fn rknn_cdf_tilted(
+    k: usize, nbar: f64, sigma2_j: f64, s3: f64,
+    r_values: &[f64], params: &TiltedKnnParams,
+) -> TiltedKnnPrediction {
+    knn_cdf_tilted(PairType::Mm, k, nbar, sigma2_j, s3, 0.0, 0.0, r_values, params)
+}
+
+/// D-kNN (galaxy-matter) CDF — thin wrapper with `PairType::Gm`, biased
+/// query + matter neighbours.
 pub fn dknn_cdf_tilted(
     k: usize, nbar_ref: f64, sigma2_j: f64, s3: f64, b1: f64,
     r_values: &[f64], params: &TiltedKnnParams,
 ) -> TiltedKnnPrediction {
-    let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar_ref)).cbrt();
-    let sigma_s = sigma2_j.max(0.0).sqrt();
-
-    let (alpha, beta, ach_var, ach_s3) = fit_tilt_to_moments(
-        sigma_s, sigma2_j, s3, params.n_gauss, params.l_range,
-        params.max_iter, params.tol,
-    );
-
-    let j_grid = uniform_j_grid(params.j_min, params.j_max, params.n_j_bins);
-    let pass = doroshkevich_tilted_pass(
-        sigma_s, alpha, beta, b1, &j_grid, params.n_gauss, params.l_range,
-    );
-    let cdf_m = cdf_from_pdf(&pass.pdf_m, &j_grid);
-
-    let cdf = r_values.iter().map(|&r| {
-        let j0 = (r / r_lag).powi(3);
-        interp_cdf(&j_grid, &cdf_m, j0)
-    }).collect();
-
-    TiltedKnnPrediction {
-        k, r_lag, sigma_s, alpha, beta,
-        achieved_var: ach_var, achieved_s3: ach_s3,
-        r_values: r_values.to_vec(), cdf,
-        j_grid, pdf_v: pass.pdf_v, pdf_m: pass.pdf_m,
-    }
+    knn_cdf_tilted(PairType::Gm, k, nbar_ref, sigma2_j, s3, b1, 0.0, r_values, params)
 }
 
 /// Poisson-corrected kNN CDF for small k, via 1D convolution of the J-PDF
@@ -760,6 +812,49 @@ mod tests {
             let analytic = 1.0 - (-lambda).exp();
             assert!((p - analytic).abs() < 0.01,
                     "k=1 σ→0 Poisson CDF at r={:.1}: {} vs Erlang {}", r, p, analytic);
+        }
+    }
+
+    #[test]
+    fn pair_types_ordering_at_fixed_r() {
+        // At fixed r and with positive bias, the galaxy-galaxy CDF should
+        // exceed the galaxy-matter CDF (biased neighbours are more clustered,
+        // so enclosed count reaches k at smaller r → more prob at fixed r).
+        // Matter-matter lies in between / separate convention.
+        use crate::{Cosmology, Workspace};
+        use crate::integrals::{IntegrationParams, sigma2_tree_ws};
+        use crate::doroshkevich::doroshkevich_moments;
+
+        let cosmo = Cosmology::planck2018();
+        let mut ws = Workspace::new(4000);
+        ws.update_cosmology(&cosmo);
+        let ip = IntegrationParams::fast();
+
+        let k = 16usize;
+        let nbar = 1e-3;
+        let r_lag = (3.0 * k as f64 / (4.0 * PI * nbar)).cbrt();
+        let s = sigma2_tree_ws(r_lag, &ws, &ip);
+        let base = doroshkevich_moments(s.sqrt(), 80, 6.0);
+        let b1 = 1.5;
+
+        // A representative r around R_Lag where the CDF is transitioning.
+        let r_test = vec![0.9 * r_lag];
+
+        let p_mm = knn_cdf_tilted(PairType::Mm, k, nbar, base.variance, base.s3,
+                                  0.0, 0.0, &r_test, &TiltedKnnParams::default());
+        let p_gm = knn_cdf_tilted(PairType::Gm, k, nbar, base.variance, base.s3,
+                                  b1, 0.0, &r_test, &TiltedKnnParams::default());
+        let p_gg = knn_cdf_tilted(PairType::Gg, k, nbar, base.variance, base.s3,
+                                  b1, b1, &r_test, &TiltedKnnParams::default());
+        println!("mm={:.4}  gm={:.4}  gg={:.4}",
+                 p_mm.cdf[0], p_gm.cdf[0], p_gg.cdf[0]);
+        // gg should exceed gm (neighbour bias enhances enclosed count).
+        assert!(p_gg.cdf[0] > p_gm.cdf[0],
+                "gg={} should exceed gm={} at fixed r with b1>0",
+                p_gg.cdf[0], p_gm.cdf[0]);
+        // All CDFs bounded.
+        for cdf in [&p_mm.cdf, &p_gm.cdf, &p_gg.cdf] {
+            assert!(cdf[0] >= 0.0 && cdf[0] <= 1.0);
         }
     }
 

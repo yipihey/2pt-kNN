@@ -16,8 +16,8 @@ pub use pt::knn_cdf::{
     rknn_cdf_with_poisson,
     dknn_cdf_biased,
     multi_k_rknn_cdfs, multi_k_dknn_cdfs,
-    TiltedKnnParams, TiltedKnnPrediction,
-    rknn_cdf_tilted, dknn_cdf_tilted, poisson_correct_cdf,
+    TiltedKnnParams, TiltedKnnPrediction, PairType,
+    rknn_cdf_tilted, dknn_cdf_tilted, knn_cdf_tilted, poisson_correct_cdf,
 };
 pub use pt::doroshkevich::{
     doroshkevich_cdf, doroshkevich_cdf_biased,

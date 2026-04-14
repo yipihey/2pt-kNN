@@ -574,7 +574,9 @@ pub fn sigma2_zel_perturbative(sigma2_lin: f64) -> f64 {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Result of a single-pass tilted-Doroshkevich quadrature: moments,
-/// volume-weighted PDF, and mass-weighted PDF on a user-specified J grid.
+/// volume-weighted PDF, mass-weighted PDF, and conditional ⟨I₁ | J⟩
+/// (the trace-variable mean conditioned on J, needed for galaxy-galaxy
+/// kNN where neighbour counts get enhanced by (1 + b₁_n × I₁)).
 #[derive(Clone, Debug)]
 pub struct TiltedPass {
     /// σ used (Doroshkevich scale).
@@ -585,7 +587,7 @@ pub struct TiltedPass {
     pub beta: f64,
     /// Linear bias used (enters as α_effective = α + 6 b₁).
     pub b1: f64,
-    /// ⟨J⟩ under the tilted (and optionally mass-weighted) distribution.
+    /// ⟨J⟩ under the tilted (volume-weighted) distribution.
     pub mean_j: f64,
     /// Variance Var(J) under the tilted volume-weighted distribution.
     pub variance: f64,
@@ -599,6 +601,11 @@ pub struct TiltedPass {
     pub pdf_v: Vec<f64>,
     /// p_M(J) — mass-weighted PDF (normalized separately).
     pub pdf_m: Vec<f64>,
+    /// Conditional ⟨I₁ | J⟩ under the volume-weighted tilted distribution,
+    /// in each J bin. Empty or zero in bins with no quadrature support.
+    /// Used by galaxy-galaxy kNN to apply the (1 + b₁_n × I₁) neighbour-bias
+    /// enhancement within the factorized approximation.
+    pub mean_i1_given_j: Vec<f64>,
 }
 
 /// Helper: build a uniform J grid of `n_bins` centres on [j_min, j_max].
@@ -633,6 +640,7 @@ pub fn doroshkevich_tilted_pass(
             sigma: 0.0, alpha, beta, b1,
             mean_j: 1.0, variance: 0.0, mu3: 0.0, s3: 0.0,
             j_grid: j_grid.to_vec(), pdf_v: empty_hist(), pdf_m: empty_hist(),
+            mean_i1_given_j: empty_hist(),
         };
     }
 
@@ -662,6 +670,9 @@ pub fn doroshkevich_tilted_pass(
     let mut s3_v = 0.0_f64;   // ⟨J³⟩
     let mut pdf_v = empty_hist();
     let mut pdf_m = empty_hist();
+    // Accumulators for ⟨I₁ | J⟩: Σ w·I₁ per bin, Σ w per bin.
+    let mut i1_w_per_bin = empty_hist();
+    let mut w_per_bin = empty_hist();
 
     for i3 in 0..n_gauss {
         let e3 = e3_mid + e3_scale * nodes[i3];
@@ -703,23 +714,27 @@ pub fn doroshkevich_tilted_pass(
                 // Mass-weighted partition function: only finite contribution
                 // when J > 0 (the mass-weighted density is ill-defined in
                 // shell-crossed regions J ≤ 0; we clip them out).
+                let bin_ok = j >= j_min_edge && j < j_min_edge + (n_bins as f64) * dj;
+                let bin = if bin_ok {
+                    Some(((j - j_min_edge) * inv_dj) as usize)
+                } else { None };
                 if j > 0.0 {
                     let fw_m = fw / j;
                     z_m += fw_m;
-
-                    // Histogram both PDFs.
-                    if j >= j_min_edge && j < j_min_edge + (n_bins as f64) * dj {
-                        let bin = ((j - j_min_edge) * inv_dj) as usize;
-                        if bin < n_bins {
-                            pdf_v[bin] += fw;
-                            pdf_m[bin] += fw_m;
+                    if let Some(b) = bin {
+                        if b < n_bins {
+                            pdf_v[b] += fw;
+                            pdf_m[b] += fw_m;
+                            // Track ⟨I₁ | J⟩ under volume weighting.
+                            i1_w_per_bin[b] += fw * i1_inv;
+                            w_per_bin[b] += fw;
                         }
                     }
-                } else if j >= j_min_edge && j < j_min_edge + (n_bins as f64) * dj {
-                    // Volume-weighted PDF still gets the J<0 contribution.
-                    let bin = ((j - j_min_edge) * inv_dj) as usize;
-                    if bin < n_bins {
-                        pdf_v[bin] += fw;
+                } else if let Some(b) = bin {
+                    if b < n_bins {
+                        pdf_v[b] += fw;
+                        i1_w_per_bin[b] += fw * i1_inv;
+                        w_per_bin[b] += fw;
                     }
                 }
             }
@@ -731,6 +746,7 @@ pub fn doroshkevich_tilted_pass(
             sigma, alpha, beta, b1,
             mean_j: 1.0, variance: 0.0, mu3: 0.0, s3: 0.0,
             j_grid: j_grid.to_vec(), pdf_v: empty_hist(), pdf_m: empty_hist(),
+            mean_i1_given_j: empty_hist(),
         };
     }
 
@@ -749,10 +765,16 @@ pub fn doroshkevich_tilted_pass(
         for p in pdf_m.iter_mut() { *p *= norm_m_inv; }
     }
 
+    // Conditional ⟨I₁ | J⟩: per-bin mean. Where no weight landed, leave 0.
+    let mean_i1: Vec<f64> = i1_w_per_bin.iter().zip(w_per_bin.iter())
+        .map(|(s, w)| if *w > 1e-30 { s / w } else { 0.0 })
+        .collect();
+
     TiltedPass {
         sigma, alpha, beta, b1,
         mean_j, variance, mu3: mu3_val, s3: s3_red,
         j_grid: j_grid.to_vec(), pdf_v, pdf_m,
+        mean_i1_given_j: mean_i1,
     }
 }
 

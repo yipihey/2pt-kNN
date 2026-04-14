@@ -284,16 +284,18 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "knn_cdf_tilted",
-            "description": "Predict kNN CDFs using exponential-tilting of the Doroshkevich distribution. Matches BOTH target σ²_J and target s₃ (vs the older σ_eff approach which only matches variance). Returns CDF plus the internal J-PDFs. Set b1=0 for R-kNN (random query points), b1>0 for D-kNN (biased tracers).",
+            "description": "Predict kNN CDFs using exponential-tilting of the Doroshkevich distribution to match BOTH σ²_J and s₃. Three pair types: 'mm' (matter-matter, unbiased query+neighbours), 'gm' (galaxy-matter, biased query, matter neighbours), 'gg' (galaxy-galaxy, biased query AND neighbours — this is what most surveys measure). For 'gg' the neighbour-bias enhancement (1+b1_neighbour×⟨I₁|J⟩) uses the factorized approximation.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "k_values": {"type": "array", "items": {"type": "integer"}, "description": "Neighbour ranks"},
-                    "nbar": {"type": "number", "description": "Reference number density [h^3/Mpc^3]"},
-                    "b1": {"type": "number", "default": 0.0, "description": "Linear bias (0 = R-kNN, >0 = D-kNN)"},
+                    "nbar": {"type": "number", "description": "Number density of the NEIGHBOUR sample [h^3/Mpc^3] (matter for mm/gm, galaxy for gg)"},
+                    "pair_type": {"type": "string", "enum": ["mm", "gm", "gg"], "default": "mm", "description": "'mm' matter-matter (unbiased R-kNN), 'gm' galaxy-matter (D-kNN with matter neighbours), 'gg' galaxy-galaxy (D-kNN with biased neighbours — typical survey case)"},
+                    "b1_query": {"type": "number", "default": 0.0, "description": "Linear bias of the query sample (ignored for mm)"},
+                    "b1_neighbour": {"type": "number", "default": 0.0, "description": "Linear bias of the neighbour sample (ignored for mm, gm; for auto-kNN set equal to b1_query)"},
                     "r_values": {"type": "array", "items": {"type": "number"}, "description": "Query radii [Mpc/h]"},
                     "n_lpt": {"type": "integer", "default": 3},
-                    "with_poisson": {"type": "boolean", "default": false, "description": "Apply Poisson convolution (important for small k)"}
+                    "with_poisson": {"type": "boolean", "default": false, "description": "Apply Poisson convolution for small k. Only applies to mm/gm; gg Poisson correction is not yet implemented."}
                 },
                 "required": ["k_values", "nbar", "r_values"]
             }
@@ -742,13 +744,21 @@ fn handle_dknn_cdf_predict(state: &mut ServerState, args: &Value) -> Result<Valu
     Ok(json!({ "r_values": r_values, "nbar_ref": nbar_ref, "b1": b1, "predictions": results }))
 }
 
-/// Tilted-PDF kNN CDF: matches both σ²_J and s₃ via exponential tilting.
+/// Tilted-PDF kNN CDF with pair-type selector (mm/gm/gg).
 fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value, String> {
     let cosmo = state.get_cosmology()?.clone();
     let k_values: Vec<usize> = serde_json::from_value(args["k_values"].clone())
         .map_err(|e| format!("k_values: {}", e))?;
     let nbar = args["nbar"].as_f64().ok_or("nbar required")?;
-    let b1 = args.get("b1").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let pair_type_str = args.get("pair_type").and_then(|v| v.as_str()).unwrap_or("mm");
+    let pair_type = match pair_type_str {
+        "mm" => pt::knn_cdf::PairType::Mm,
+        "gm" => pt::knn_cdf::PairType::Gm,
+        "gg" => pt::knn_cdf::PairType::Gg,
+        other => return Err(format!("pair_type must be mm/gm/gg, got {}", other)),
+    };
+    let b1_query = args.get("b1_query").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let b1_neighbour = args.get("b1_neighbour").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let r_values: Vec<f64> = serde_json::from_value(args["r_values"].clone())
         .map_err(|e| format!("r_values: {}", e))?;
     let n_lpt = args.get("n_lpt").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
@@ -757,24 +767,18 @@ fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value,
     let tilt_params = theory::TiltedKnnParams::default();
 
     let results: Vec<Value> = k_values.iter().map(|&k| {
-        // R(k, nbar): Lagrangian smoothing scale.
         let r_lag = theory::knn_to_radius(k, nbar);
-        // Target moments at R_Lag from the PT pipeline.
         let detailed = pt::sigma2_j_full(&cosmo, r_lag, n_lpt, 0.0, 0.0, true, false);
-        // Reduced s₃ = s3_jacobian / Var²
         let s3_red = if detailed.sigma2_j > 1e-30 {
             detailed.s3_jacobian / (detailed.sigma2_j * detailed.sigma2_j)
-        } else {
-            0.0
-        };
-        let pred = if b1 != 0.0 {
-            pt::knn_cdf::dknn_cdf_tilted(k, nbar, detailed.sigma2_j, s3_red, b1,
-                                          &r_values, &tilt_params)
-        } else {
-            pt::knn_cdf::rknn_cdf_tilted(k, nbar, detailed.sigma2_j, s3_red,
-                                          &r_values, &tilt_params)
-        };
-        let cdf_out = if with_poisson {
+        } else { 0.0 };
+        let pred = pt::knn_cdf::knn_cdf_tilted(
+            pair_type, k, nbar, detailed.sigma2_j, s3_red,
+            b1_query, b1_neighbour, &r_values, &tilt_params,
+        );
+        // Poisson correction currently only implemented for matter-neighbour
+        // cases (mm, gm). For gg we return the deterministic-count CDF.
+        let cdf_out = if with_poisson && !matches!(pair_type, pt::knn_cdf::PairType::Gg) {
             pt::knn_cdf::poisson_correct_cdf(&pred.pdf_v, &pred.j_grid, k, nbar, &r_values)
         } else {
             pred.cdf.clone()
@@ -794,8 +798,13 @@ fn handle_knn_cdf_tilted(state: &mut ServerState, args: &Value) -> Result<Value,
     }).collect();
 
     Ok(json!({
-        "r_values": r_values, "nbar": nbar, "b1": b1,
-        "with_poisson": with_poisson, "predictions": results,
+        "r_values": r_values,
+        "nbar": nbar,
+        "pair_type": pair_type_str,
+        "b1_query": b1_query,
+        "b1_neighbour": b1_neighbour,
+        "with_poisson": with_poisson,
+        "predictions": results,
     }))
 }
 

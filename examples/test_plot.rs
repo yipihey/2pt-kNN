@@ -1,4 +1,4 @@
-use twopoint::validation::{ValidationConfig, BruteForceKnnBackend, run_validation};
+use twopoint::validation::{ValidationConfig, run_validation};
 use twopoint::plotting;
 use twopoint::mock::CoxMockParams;
 
@@ -15,9 +15,8 @@ fn main() {
         box_size: None,
     };
 
-    let backend = BruteForceKnnBackend;
     eprintln!("Running validation...");
-    let result = run_validation(&config, &backend);
+    let result = run_validation(&config);
     eprintln!("Done. chi2/dof = {:.3}", result.chi2_per_dof);
 
     eprintln!("Rendering xi plot...");

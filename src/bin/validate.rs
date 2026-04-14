@@ -19,7 +19,7 @@ use clap::Parser;
 use std::time::Instant;
 use twopoint::corrfunc::CorrfuncRunner;
 use twopoint::estimator::{
-    cdf_k_values, cdf_r_grid, linear_bins, KnnDistances, KnnDistributions, LandySzalayKnn,
+    cdf_k_values, cdf_r_grid, exclude_self_pairs, linear_bins, LandySzalayKnn,
 };
 use twopoint::ladder::{
     average_cdfs, stitch_levels, DilutionLadder, KnnCdfSummary, LevelResult,
@@ -104,36 +104,14 @@ struct Args {
     #[arg(long)]
     line_length: Option<f64>,
 
+    /// Generate paper-quality 2-panel ξ(r) + ratio figure
+    #[arg(long)]
+    paper: bool,
+
     /// Launch interactive TUI plot explorer after batch generation
     #[cfg(feature = "interactive")]
     #[arg(long)]
     interactive: bool,
-}
-
-/// Remove self-pairs from DD query results.
-///
-/// When querying data against its own tree, the first neighbor is the
-/// point itself (distance ≈ 0). We query k_max+1 neighbors and drop
-/// the self-pair, keeping exactly k_max real neighbors.
-fn exclude_self_pairs(dists: KnnDistributions, k_max: usize) -> KnnDistributions {
-    let filtered: Vec<KnnDistances> = dists
-        .per_query
-        .into_iter()
-        .map(|qd| {
-            let real: Vec<f64> = qd
-                .distances
-                .into_iter()
-                .filter(|&d| d > 1e-10) // drop the self at distance ≈ 0
-                .take(k_max)
-                .collect();
-            KnnDistances { distances: real }
-        })
-        .collect();
-
-    KnnDistributions {
-        per_query: filtered,
-        k_max,
-    }
 }
 
 fn main() {
@@ -852,64 +830,72 @@ fn main() {
     };
 
     // 1. ξ(r) comparison
-    let svg = plotter.render(&plotting::render_xi_comparison(&plot_data, &config));
-    let path = format!("{}/xi_vs_analytic.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_xi_comparison(&plot_data, &config));
+    let path = format!("{}/xi_vs_analytic.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // 2. Residuals
-    let svg = plotter.render(&plotting::render_residuals(&plot_data, &config));
-    let path = format!("{}/xi_residuals.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_residuals(&plot_data, &config));
+    let path = format!("{}/xi_residuals.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // 3. r²ξ(r)
-    let svg = plotter.render(&plotting::render_r2xi(&plot_data, &config));
-    let path = format!("{}/r2xi_comparison.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_r2xi(&plot_data, &config));
+    let path = format!("{}/r2xi_comparison.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // 4. CDF comparison
-    let svg = plotter.render(&plotting::render_cdf_comparison(&plot_data, &config));
-    let path = format!("{}/cdf_comparison.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_cdf_comparison(&plot_data, &config));
+    let path = format!("{}/cdf_comparison.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // 5. Individual mocks
-    let svg = plotter.render(&plotting::render_individual_mocks(&plot_data, &config));
-    let path = format!("{}/individual_mocks.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_individual_mocks(&plot_data, &config));
+    let path = format!("{}/individual_mocks.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // 6. Summary 2×2 figure
-    let svg = plotter.render(&plotting::render_summary_figure(&plot_data, &summary_config));
-    let path = format!("{}/validation_summary.svg", args.output_dir);
-    std::fs::write(&path, &svg).unwrap();
+    let pdf = plotter.render_pdf(&plotting::render_summary_figure(&plot_data, &summary_config));
+    let path = format!("{}/validation_summary.pdf", args.output_dir);
+    std::fs::write(&path, &pdf).unwrap();
     println!("  Wrote {}", path);
 
     // --- Corrfunc-specific plots ---
     if has_corrfunc {
-        let svg = plotter.render(&plotting::render_xi_corrfunc_overlay(&plot_data, &config));
-        let path = format!("{}/xi_corrfunc_overlay.svg", args.output_dir);
-        std::fs::write(&path, &svg).unwrap();
+        let pdf = plotter.render_pdf(&plotting::render_xi_corrfunc_overlay(&plot_data, &config));
+        let path = format!("{}/xi_corrfunc_overlay.pdf", args.output_dir);
+        std::fs::write(&path, &pdf).unwrap();
         println!("  Wrote {}", path);
 
-        let svg = plotter.render(&plotting::render_xi_ratio(&plot_data, &config));
-        let path = format!("{}/xi_ratio.svg", args.output_dir);
-        std::fs::write(&path, &svg).unwrap();
+        let pdf = plotter.render_pdf(&plotting::render_xi_ratio(&plot_data, &config));
+        let path = format!("{}/xi_ratio.pdf", args.output_dir);
+        std::fs::write(&path, &pdf).unwrap();
         println!("  Wrote {}", path);
 
-        let svg = plotter.render(&plotting::render_timing(&plot_data, &config));
-        let path = format!("{}/timing_comparison.svg", args.output_dir);
-        std::fs::write(&path, &svg).unwrap();
+        let pdf = plotter.render_pdf(&plotting::render_timing(&plot_data, &config));
+        let path = format!("{}/timing_comparison.pdf", args.output_dir);
+        std::fs::write(&path, &pdf).unwrap();
+        println!("  Wrote {}", path);
+    }
+
+    // --- Paper figure ---
+    if args.paper {
+        let pdf = plotter.render_pdf(&plotting::render_paper_xi_figure(&plot_data, args.n_mocks));
+        let path = format!("{}/paper_xi_comparison.pdf", args.output_dir);
+        std::fs::write(&path, &pdf).unwrap();
         println!("  Wrote {}", path);
     }
 
     // --- Dilution-specific plots ---
     if args.dilution {
-        let svg = plotter.render(&plotting::render_dilution_levels(&plot_data, &config));
-        let path = format!("{}/dilution_levels.svg", args.output_dir);
-        std::fs::write(&path, &svg).unwrap();
+        let pdf = plotter.render_pdf(&plotting::render_dilution_levels(&plot_data, &config));
+        let path = format!("{}/dilution_levels.pdf", args.output_dir);
+        std::fs::write(&path, &pdf).unwrap();
         println!("  Wrote {}", path);
     }
 

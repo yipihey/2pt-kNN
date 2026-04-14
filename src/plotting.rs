@@ -110,6 +110,29 @@ impl TypstPlotter {
             }
         }
     }
+
+    /// Compile a Typst source string to PDF (for LaTeX inclusion via `\includegraphics`).
+    pub fn render_pdf(&self, typst_source: &str) -> Vec<u8> {
+        let engine = TypstEngine::builder()
+            .main_file(typst_source)
+            .fonts([FONT_REGULAR as &[u8], FONT_MATH as &[u8]])
+            .with_static_source_file_resolver(self.sources.clone())
+            .with_static_file_resolver(self.binaries.clone())
+            .build();
+
+        let result = engine.compile::<PagedDocument>();
+        match result.output {
+            Ok(doc) => {
+                let options = typst_pdf::PdfOptions::default();
+                typst_pdf::pdf(&doc, &options).expect("PDF generation failed")
+            }
+            Err(e) => {
+                let warnings: Vec<String> =
+                    result.warnings.iter().map(|w| format!("{:?}", w)).collect();
+                panic!("Typst compilation failed: {}\nWarnings: {:?}", e, warnings);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,8 +190,8 @@ fn fmt_array(values: &[f64]) -> String {
 }
 
 /// Format scale parameter for lq.diagram.
-fn fmt_scale(log: bool) -> &'static str {
-    if log { "\"log\"" } else { "\"linear\"" }
+fn fmt_scale(_log: bool) -> &'static str {
+    "lq.scale.symlog(threshold: 0.01)"
 }
 
 /// Format axis limit for lq.diagram.
@@ -243,7 +266,7 @@ pub fn render_xi_comparison(data: &PlotData, config: &PlotConfig) -> String {
             let hi: Vec<f64> = indices.iter().map(|&i| data.mean_xi[i] + data.std_xi[i]).collect();
             let xi_l: Vec<f64> = indices.iter().map(|&i| data.mean_xi[i]).collect();
             src.push_str(&format!(
-                "  lq.fill-between({}, {}, {},\n    fill: level-colors.at({}).lighten(80%),\n    stroke: none),\n",
+                "  lq.fill-between({}, {}, y2: {},\n    fill: level-colors.at({}).lighten(80%),\n    stroke: none),\n",
                 fmt_array(&r_l), fmt_array(&lo), fmt_array(&hi), level,
             ));
             src.push_str(&format!(
@@ -252,7 +275,7 @@ pub fn render_xi_comparison(data: &PlotData, config: &PlotConfig) -> String {
             ));
         }
     } else {
-        src.push_str("  lq.fill-between(r, lower, upper,\n    fill: steelblue.lighten(80%),\n    stroke: none,\n    label: [kNN LS $plus.minus 1 sigma$]),\n");
+        src.push_str("  lq.fill-between(r, lower, y2: upper,\n    fill: steelblue.lighten(80%),\n    stroke: none,\n    label: [kNN LS $plus.minus 1 sigma$]),\n");
         src.push_str("  lq.plot(r, mean-xi,\n    stroke: (paint: steelblue, thickness: 2pt)),\n");
     }
 
@@ -288,7 +311,7 @@ pub fn render_residuals(data: &PlotData, config: &PlotConfig) -> String {
         "\n#lq.diagram(\n  title: [Estimator Bias],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$(hat(xi) - xi_\"true\") slash sigma_\"mean\"$],\n  {},\n",
         diagram_opts(config),
     ));
-    src.push_str("  lq.plot(r, bias,\n    stroke: none, mark: \"o\", mark-size: 4pt,\n    color: steelblue,\n    label: [Bias$/sigma$]),\n");
+    src.push_str("  lq.plot(r, bias,\n    stroke: none, mark: \"o\", mark-size: 4pt,\n    color: steelblue,\n    label: [Bias/$sigma$]),\n");
     src.push_str("  lq.hlines(0,\n    stroke: (dash: \"dashed\", paint: black, thickness: 0.8pt)),\n");
     src.push_str("  lq.hlines(2,\n    stroke: (dash: \"dashed\", paint: crimson, thickness: 0.7pt)),\n");
     src.push_str("  lq.hlines(-2,\n    stroke: (dash: \"dashed\", paint: crimson, thickness: 0.7pt)),\n");
@@ -310,6 +333,16 @@ pub fn render_r2xi(data: &PlotData, config: &PlotConfig) -> String {
     src.push_str(&format!("#let r-smooth = {}\n", fmt_array(&data.r_smooth)));
     src.push_str(&format!("#let r2xi-analytic = {}\n", fmt_array(&r2xi_analytic)));
 
+    // Pre-declare r2xi arrays before the diagram block (non-dilution path)
+    if data.level_tags.is_none() {
+        let r2xi_mean: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * data.mean_xi[i]).collect();
+        let r2xi_lower: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] - data.std_xi[i])).collect();
+        let r2xi_upper: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] + data.std_xi[i])).collect();
+        src.push_str(&format!("#let r2xi-mean = {}\n", fmt_array(&r2xi_mean)));
+        src.push_str(&format!("#let r2xi-lower = {}\n", fmt_array(&r2xi_lower)));
+        src.push_str(&format!("#let r2xi-upper = {}\n", fmt_array(&r2xi_upper)));
+    }
+
     src.push_str(&format!(
         "\n#lq.diagram(\n  title: [$r^2 xi(r)$ Comparison],\n  xlabel: [$r$ #h(0.3em) $[$h$\"\"^(-1)$ Mpc$]$],\n  ylabel: [$r^2 xi(r)$ #h(0.3em) $[$h$\"\"^(-2)$ Mpc$\"\"^2]$],\n  {},\n",
         diagram_opts(config),
@@ -325,7 +358,7 @@ pub fn render_r2xi(data: &PlotData, config: &PlotConfig) -> String {
             let hi: Vec<f64> = indices.iter().map(|&i| data.r_centers[i].powi(2) * (data.mean_xi[i] + data.std_xi[i])).collect();
             let r2xi_l: Vec<f64> = indices.iter().map(|&i| data.r_centers[i].powi(2) * data.mean_xi[i]).collect();
             src.push_str(&format!(
-                "  lq.fill-between({}, {}, {},\n    fill: level-colors.at({}).lighten(80%),\n    stroke: none),\n",
+                "  lq.fill-between({}, {}, y2: {},\n    fill: level-colors.at({}).lighten(80%),\n    stroke: none),\n",
                 fmt_array(&r_l), fmt_array(&lo), fmt_array(&hi), level,
             ));
             src.push_str(&format!(
@@ -334,13 +367,7 @@ pub fn render_r2xi(data: &PlotData, config: &PlotConfig) -> String {
             ));
         }
     } else {
-        let r2xi_mean: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * data.mean_xi[i]).collect();
-        let r2xi_lower: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] - data.std_xi[i])).collect();
-        let r2xi_upper: Vec<f64> = (0..n).map(|i| data.r_centers[i].powi(2) * (data.mean_xi[i] + data.std_xi[i])).collect();
-        src.push_str(&format!("#let r2xi-mean = {}\n", fmt_array(&r2xi_mean)));
-        src.push_str(&format!("#let r2xi-lower = {}\n", fmt_array(&r2xi_lower)));
-        src.push_str(&format!("#let r2xi-upper = {}\n", fmt_array(&r2xi_upper)));
-        src.push_str("  lq.fill-between(r, r2xi-lower, r2xi-upper,\n    fill: steelblue.lighten(80%),\n    stroke: none),\n");
+        src.push_str("  lq.fill-between(r, r2xi-lower, y2: r2xi-upper,\n    fill: steelblue.lighten(80%),\n    stroke: none),\n");
         src.push_str("  lq.plot(r, r2xi-mean,\n    stroke: (paint: steelblue, thickness: 2pt),\n    label: [kNN LS]),\n");
     }
 
@@ -500,7 +527,7 @@ pub fn render_xi_corrfunc_overlay(data: &PlotData, config: &PlotConfig) -> Strin
         diagram_opts(config),
     ));
 
-    src.push_str("  lq.fill-between(r, lower, upper,\n    fill: steelblue.lighten(80%),\n    stroke: none),\n");
+    src.push_str("  lq.fill-between(r, lower, y2: upper,\n    fill: steelblue.lighten(80%),\n    stroke: none),\n");
     src.push_str("  lq.plot(r, mean-xi,\n    stroke: (paint: steelblue, thickness: 2pt),\n    label: [kNN LS $plus.minus 1 sigma$]),\n");
 
     if let (Some(cf_mean), Some(cf_std)) = (&data.corrfunc_mean_xi, &data.corrfunc_std_xi) {
@@ -600,7 +627,7 @@ pub fn render_dilution_levels(data: &PlotData, config: &PlotConfig) -> String {
             let hi: Vec<f64> = indices.iter().map(|&i| data.mean_xi[i] + data.std_xi[i]).collect();
             let xi_l: Vec<f64> = indices.iter().map(|&i| data.mean_xi[i]).collect();
             src.push_str(&format!(
-                "  lq.fill-between({}, {}, {},\n    fill: level-colors.at({}).lighten(85%),\n    stroke: none),\n",
+                "  lq.fill-between({}, {}, y2: {},\n    fill: level-colors.at({}).lighten(85%),\n    stroke: none),\n",
                 fmt_array(&r_l), fmt_array(&lo), fmt_array(&hi), level,
             ));
             src.push_str(&format!(
@@ -651,14 +678,14 @@ pub fn render_summary_figure(data: &PlotData, config: &PlotConfig) -> String {
 
     // Panel (a): ξ(r)
     src.push_str("  lq.diagram(\n    title: [(a) $xi(r)$],\n    xlabel: [$r$ #h(0.2em) $[$h$\"\"^(-1)$ Mpc$]$],\n    ylabel: [$xi(r)$],\n");
-    src.push_str("    lq.fill-between(r, lower, upper,\n      fill: steelblue.lighten(80%),\n      stroke: none,\n      label: [kNN LS]),\n");
+    src.push_str("    lq.fill-between(r, lower, y2: upper,\n      fill: steelblue.lighten(80%),\n      stroke: none,\n      label: [kNN LS]),\n");
     src.push_str("    lq.plot(r, mean-xi,\n      stroke: (paint: steelblue, thickness: 2pt)),\n");
     src.push_str("    lq.plot(r-smooth, xi-smooth,\n      stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt),\n      label: [Analytic]),\n");
     src.push_str("  ),\n");
 
     // Panel (b): r²ξ(r)
     src.push_str("  lq.diagram(\n    title: [(b) $r^2 xi(r)$],\n    xlabel: [$r$ #h(0.2em) $[$h$\"\"^(-1)$ Mpc$]$],\n    ylabel: [$r^2 xi(r)$],\n");
-    src.push_str("    lq.fill-between(r, r2xi-lower, r2xi-upper,\n      fill: steelblue.lighten(80%),\n      stroke: none),\n");
+    src.push_str("    lq.fill-between(r, r2xi-lower, y2: r2xi-upper,\n      fill: steelblue.lighten(80%),\n      stroke: none),\n");
     src.push_str("    lq.plot(r, r2xi-mean,\n      stroke: (paint: steelblue, thickness: 2pt)),\n");
     src.push_str("    lq.plot(r-smooth, r2xi-analytic,\n      stroke: (dash: \"dashed\", paint: black, thickness: 1.5pt)),\n");
     src.push_str("  ),\n");
@@ -748,6 +775,172 @@ pub fn render_explorer_summary(data: &PlotData, panel_configs: &[PlotConfig; 8])
             }
             src.push_str(",\n");
         }
+    }
+
+    src.push_str(")\n");
+    src
+}
+
+// ---------------------------------------------------------------------------
+// Paper-quality figures
+// ---------------------------------------------------------------------------
+
+/// Compute stderr bands: (lower, upper) = mean ± std/√n, with optional log clamp.
+fn stderr_band(mean: &[f64], std: &[f64], n: usize, clamp_min: f64) -> (Vec<f64>, Vec<f64>) {
+    let s = (n as f64).sqrt();
+    let lo: Vec<f64> = mean
+        .iter()
+        .zip(std)
+        .map(|(&m, &si)| (m - si / s).max(clamp_min))
+        .collect();
+    let hi: Vec<f64> = mean.iter().zip(std).map(|(&m, &si)| m + si / s).collect();
+    (lo, hi)
+}
+
+/// Paper-quality stacked 2-panel figure: (a) ξ(r) with stderr bands, (b) kNN/Corrfunc ratio.
+/// Single MNRAS/A&A column width (8.4cm × 12cm).
+pub fn render_paper_xi_figure(data: &PlotData, n_mocks: usize) -> String {
+    let n = data.r_centers.len();
+
+    // kNN stderr bands (symlog handles negatives — no clamping)
+    let (knn_lo, knn_hi) = stderr_band(&data.mean_xi, &data.std_xi, n_mocks, f64::NEG_INFINITY);
+
+    let mut src = String::from(
+        r##"#set page(width: 8.4cm, height: 12cm, margin: (top: 2mm, bottom: 2mm, left: 1mm, right: 1mm))
+#set text(size: 9pt, font: "New Computer Modern")
+#import "@preview/lilaq:0.6.0" as lq
+#let steelblue = rgb("#4682B4")
+#let crimson = rgb("#DC143C")
+"##,
+    );
+
+    // Data arrays (symlog handles negatives natively — no clamping needed)
+    src.push_str(&format!("#let r = {}\n", fmt_array(&data.r_centers)));
+    src.push_str(&format!("#let r-smooth = {}\n", fmt_array(&data.r_smooth)));
+    src.push_str(&format!("#let xi-smooth = {}\n", fmt_array(&data.xi_smooth)));
+    src.push_str(&format!("#let mean-xi = {}\n", fmt_array(&data.mean_xi)));
+    src.push_str(&format!("#let knn-lo = {}\n", fmt_array(&knn_lo)));
+    src.push_str(&format!("#let knn-hi = {}\n", fmt_array(&knn_hi)));
+
+    // Corrfunc stderr bands + ratio data (if available)
+    let has_corrfunc =
+        data.corrfunc_mean_xi.is_some() && data.corrfunc_std_xi.is_some() && n_mocks > 0;
+    if let (Some(cf_mean), Some(cf_std)) = (&data.corrfunc_mean_xi, &data.corrfunc_std_xi) {
+        let (cf_lo, cf_hi) = stderr_band(cf_mean, cf_std, n_mocks, f64::NEG_INFINITY);
+        src.push_str(&format!("#let cf-mean = {}\n", fmt_array(cf_mean)));
+        src.push_str(&format!("#let cf-lo = {}\n", fmt_array(&cf_lo)));
+        src.push_str(&format!("#let cf-hi = {}\n", fmt_array(&cf_hi)));
+
+        // Ratio: only bins where both ξ > threshold
+        let threshold = 0.001;
+        let sqrt_n = (n_mocks as f64).sqrt();
+        let mut r_ratio = Vec::new();
+        let mut ratio_vals = Vec::new();
+        let mut ratio_errs = Vec::new();
+        for i in 0..n {
+            if data.mean_xi[i] > threshold && cf_mean[i] > threshold {
+                let ratio = data.mean_xi[i] / cf_mean[i];
+                let se_knn = data.std_xi[i] / sqrt_n;
+                let se_cf = cf_std[i] / sqrt_n;
+                let sigma_ratio = ratio
+                    * ((se_knn / data.mean_xi[i]).powi(2) + (se_cf / cf_mean[i]).powi(2)).sqrt();
+                r_ratio.push(data.r_centers[i]);
+                ratio_vals.push(ratio);
+                ratio_errs.push(sigma_ratio);
+            }
+        }
+        src.push_str(&format!("#let r-ratio = {}\n", fmt_array(&r_ratio)));
+        src.push_str(&format!("#let ratio = {}\n", fmt_array(&ratio_vals)));
+        src.push_str(&format!("#let ratio-err = {}\n", fmt_array(&ratio_errs)));
+    }
+
+    src.push_str("\n#show: lq.layout\n");
+    src.push_str("#grid(columns: 1, row-gutter: 0.3em,\n");
+
+    // === Panel (a): ξ(r) comparison — log-log ===
+    src.push_str("  lq.diagram(\n");
+    src.push_str("    xlabel: none,\n");
+    src.push_str("    ylabel: [$xi(r)$],\n");
+    src.push_str("    xscale: lq.scale.symlog(threshold: 0.01), yscale: lq.scale.symlog(threshold: 0.01),\n");
+    // kNN stderr band
+    src.push_str(
+        "    lq.fill-between(r, knn-lo, y2: knn-hi,\n\
+         \x20     fill: steelblue.lighten(75%),\n\
+         \x20     stroke: none),\n",
+    );
+    src.push_str(
+        "    lq.plot(r, mean-xi,\n\
+         \x20     stroke: (paint: steelblue, thickness: 1.5pt),\n\
+         \x20     label: [kNN]),\n",
+    );
+    if has_corrfunc {
+        // Corrfunc stderr band
+        src.push_str(
+            "    lq.fill-between(r, cf-lo, y2: cf-hi,\n\
+             \x20     fill: crimson.lighten(80%),\n\
+             \x20     stroke: none),\n",
+        );
+        src.push_str(
+            "    lq.plot(r, cf-mean,\n\
+             \x20     stroke: (paint: crimson, thickness: 1.5pt),\n\
+             \x20     label: [Corrfunc]),\n",
+        );
+    }
+    // Analytic dashed
+    src.push_str(
+        "    lq.plot(r-smooth, xi-smooth,\n\
+         \x20     stroke: (dash: \"dashed\", paint: black, thickness: 1pt),\n\
+         \x20     label: [Analytic]),\n",
+    );
+    // vline at line_length
+    src.push_str(&format!(
+        "    lq.vlines({:.8},\n\
+         \x20     stroke: (dash: \"dotted\", paint: gray, thickness: 0.7pt)),\n",
+        data.line_length,
+    ));
+    src.push_str("  ),\n");
+
+    // === Panel (b): ratio — log-x, linear-y ===
+    if has_corrfunc {
+        src.push_str("  lq.diagram(\n");
+        src.push_str(
+            "    xlabel: [$r$ #h(0.2em) $[$h$\"\"^(-1)$ Mpc$]$],\n",
+        );
+        src.push_str("    ylabel: [$xi_\"kNN\" slash xi_\"Corrfunc\"$],\n");
+        src.push_str("    xscale: lq.scale.symlog(threshold: 0.01), yscale: lq.scale.symlog(threshold: 0.01),\n");
+        src.push_str("    ylim: (0.95, 1.05),\n");
+        // ±1% gray fill
+        let ones_lo: Vec<f64> = data.r_centers.iter().map(|_| 0.99).collect();
+        let ones_hi: Vec<f64> = data.r_centers.iter().map(|_| 1.01).collect();
+        src.push_str(&format!(
+            "    lq.fill-between(r, {}, y2: {},\n\
+             \x20     fill: gray.lighten(85%),\n\
+             \x20     stroke: none),\n",
+            fmt_array(&ones_lo),
+            fmt_array(&ones_hi),
+        ));
+        // hline at 1.0
+        src.push_str(
+            "    lq.hlines(1,\n\
+             \x20     stroke: (dash: \"dashed\", paint: black, thickness: 0.8pt)),\n",
+        );
+        // ±2% dashed
+        src.push_str(
+            "    lq.hlines(1.02,\n\
+             \x20     stroke: (dash: \"dashed\", paint: crimson, thickness: 0.6pt)),\n",
+        );
+        src.push_str(
+            "    lq.hlines(0.98,\n\
+             \x20     stroke: (dash: \"dashed\", paint: crimson, thickness: 0.6pt)),\n",
+        );
+        // Ratio points with propagated error bars
+        src.push_str(
+            "    lq.plot(r-ratio, ratio,\n\
+             \x20     yerr: ratio-err,\n\
+             \x20     stroke: none, mark: \"o\", mark-size: 3pt,\n\
+             \x20     color: steelblue),\n",
+        );
+        src.push_str("  ),\n");
     }
 
     src.push_str(")\n");

@@ -94,8 +94,66 @@ pub fn erlang_pdf(k: usize, r: f64, nbar: f64) -> f64 {
     dlambda_dr * (-lambda + log_term).exp()
 }
 
-// TODO: Implement
-// - Poisson|ξ CDF prediction from generating function
-// - Excess variance extraction via δ⟨N^(2)⟩ = 2 Σ_{k≥2} (k-1) Δ_k
-// - σ²_NL from Var[N(<R)] across query points
-// - σ²_{1/V}[k] for Press–Schechter σ(M)
+/// Excess variance and nonlinear σ² extracted from kNN residuals.
+///
+/// The kNN residuals Δ_k(r₀) = CDF_measured − CDF_predicted encode
+/// non-Poissonian structure. The excess variance of counts-in-cells is:
+///
+///   δσ²_N(V) = 2 Σ_{k≥2} (k−1) Δ_k(r₀)
+///
+/// and the full nonlinear variance:
+///
+///   σ²_NL(R) = δσ²_N / (n̄ V)²
+///
+/// These are the measurement-side counterparts of σ²_J from perturbation theory.
+#[derive(Debug, Clone)]
+pub struct ExcessVariance {
+    /// Sphere radii.
+    pub r0: Vec<f64>,
+    /// Excess variance of counts-in-cells δσ²_N(V) at each radius.
+    pub delta_sigma2_n: Vec<f64>,
+    /// Full nonlinear density variance σ²_NL(R) = δσ²_N / (n̄V)².
+    pub sigma2_nl: Vec<f64>,
+    /// Number density used for normalization.
+    pub nbar: f64,
+}
+
+impl KnnResiduals {
+    /// Extract the excess cell-count variance from kNN CDF residuals.
+    ///
+    /// δσ²_N(r₀) = 2 Σ_{k≥2} (k−1) Δ_k(r₀)
+    ///
+    /// where Δ_k = CDF_measured − CDF_predicted. The sum runs over all k ≥ 2.
+    ///
+    /// The normalized density variance is σ²_NL = δσ²_N / (n̄V)².
+    pub fn excess_variance(&self, nbar: f64) -> ExcessVariance {
+        let nr = self.r0.len();
+        let mut delta_sigma2_n = vec![0.0; nr];
+
+        for (ki, delta_k_r) in self.delta_k.iter().enumerate() {
+            let k = ki + 1; // k is 1-indexed (delta_k[0] corresponds to k=1)
+            if k < 2 { continue; } // sum starts at k=2
+            let weight = 2.0 * (k as f64 - 1.0);
+            for (ri, &dk) in delta_k_r.iter().enumerate() {
+                delta_sigma2_n[ri] += weight * dk;
+            }
+        }
+
+        let sigma2_nl: Vec<f64> = self.r0.iter().enumerate().map(|(ri, &r)| {
+            let v = 4.0 / 3.0 * std::f64::consts::PI * r.powi(3);
+            let nv = nbar * v;
+            if nv > 0.0 {
+                delta_sigma2_n[ri] / (nv * nv)
+            } else {
+                0.0
+            }
+        }).collect();
+
+        ExcessVariance {
+            r0: self.r0.clone(),
+            delta_sigma2_n,
+            sigma2_nl,
+            nbar,
+        }
+    }
+}

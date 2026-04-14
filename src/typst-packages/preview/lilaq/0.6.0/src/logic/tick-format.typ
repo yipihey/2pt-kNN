@@ -430,11 +430,14 @@
     auto-exponent-threshold, auto-exponent-threshold
   )
 
-  let linear = linear(
-    ticks.filter(tick => tick < threshold and tick > -threshold)
-  )
+  let linear-ticks = ticks.filter(tick => tick < threshold and tick > -threshold)
+  let linear-labels = if linear-ticks.len() > 0 {
+    linear(linear-ticks).labels
+  } else {
+    ()
+  }
 
-  log + linear.labels
+  log + linear-labels
 }
 
 

@@ -153,6 +153,16 @@ main {
     background: rgba(122, 162, 247, 0.1);
 }
 
+.time-estimate {
+    margin-top: 6px;
+    font-size: 12px;
+    font-family: var(--font-mono);
+    text-align: center;
+}
+.time-estimate.fast { color: var(--success); }
+.time-estimate.medium { color: var(--warning); }
+.time-estimate.slow { color: var(--error); }
+
 .run-button {
     width: 100%;
     padding: 12px;
@@ -244,13 +254,56 @@ main {
     border-bottom-color: var(--accent);
 }
 
-#plot-area {
-    flex: 1;
-    padding: 16px;
-    overflow: auto;
+.scale-toolbar {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 4px;
+    padding: 4px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.scale-label {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-dim);
+}
+
+.scale-sep {
+    width: 12px;
+}
+
+.scale-btn {
+    padding: 2px 8px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    background: var(--bg);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.scale-btn:hover {
+    color: var(--text);
+    border-color: var(--accent);
+}
+
+.scale-btn.active {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: rgba(122, 162, 247, 0.12);
+}
+
+#plot-area {
+    flex: 1;
+    padding: 8px;
+    overflow: hidden;
+    display: flex;
+    align-items: stretch;
+    justify-content: stretch;
+    min-height: 0;
 }
 
 .plot-content {
@@ -266,8 +319,8 @@ main {
 }
 
 .plot-content svg {
-    max-width: 100%;
-    max-height: 100%;
+    width: 100%;
+    height: 100%;
 }
 
 .placeholder {

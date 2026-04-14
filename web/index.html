@@ -20,50 +20,51 @@
             <div class="control-group">
                 <h3>Presets</h3>
                 <div class="preset-buttons">
-                    <button id="preset-tiny" class="preset-btn">Tiny (50k)</button>
-                    <button id="preset-euclid" class="preset-btn active">Euclid (100k)</button>
-                    <button id="preset-large" class="preset-btn">Large (500k)</button>
+                    <button id="preset-quick" class="preset-btn active">Quick (5k)</button>
+                    <button id="preset-medium" class="preset-btn">Medium (10k)</button>
+                    <button id="preset-full" class="preset-btn">Full (10k×10)</button>
                 </div>
+                <div id="time-estimate" class="time-estimate fast">~1s</div>
             </div>
 
             <div class="control-group">
-                <label for="n-points">N_points: <span id="n-points-val">100000</span></label>
-                <input type="range" id="n-points" min="10000" max="500000" step="10000" value="100000">
+                <label for="n-points">N_points: <span id="n-points-val">5000</span></label>
+                <input type="range" id="n-points" min="1000" max="50000" step="1000" value="5000">
             </div>
 
             <div class="control-group">
-                <label for="n-lines">N_lines: <span id="n-lines-val">10000</span></label>
-                <input type="range" id="n-lines" min="1000" max="50000" step="1000" value="10000">
+                <label for="n-lines">N_lines: <span id="n-lines-val">500</span></label>
+                <input type="range" id="n-lines" min="50" max="5000" step="50" value="500">
             </div>
 
             <div class="control-group">
-                <label for="n-mocks">N_mocks: <span id="n-mocks-val">10</span></label>
-                <input type="range" id="n-mocks" min="1" max="50" step="1" value="10">
+                <label for="n-mocks">N_mocks: <span id="n-mocks-val">3</span></label>
+                <input type="range" id="n-mocks" min="1" max="20" step="1" value="3">
             </div>
 
             <div class="control-group">
-                <label for="k-max">k_max: <span id="k-max-val">8</span></label>
-                <input type="range" id="k-max" min="1" max="8" step="1" value="8">
+                <label for="k-max">k_max: <span id="k-max-val">16</span></label>
+                <input type="range" id="k-max" min="2" max="64" step="2" value="16">
             </div>
 
             <div class="control-group">
-                <label for="n-bins">N_bins: <span id="n-bins-val">40</span></label>
-                <input type="range" id="n-bins" min="10" max="100" step="5" value="40">
+                <label for="n-bins">N_bins: <span id="n-bins-val">15</span></label>
+                <input type="range" id="n-bins" min="10" max="60" step="5" value="15">
             </div>
 
             <div class="control-group">
-                <label for="r-min">r_min: <span id="r-min-val">5.0</span></label>
-                <input type="range" id="r-min" min="1" max="50" step="1" value="5">
+                <label for="r-min">r_min: <span id="r-min-val">3</span></label>
+                <input type="range" id="r-min" min="1" max="20" step="1" value="3">
             </div>
 
             <div class="control-group">
-                <label for="r-max">r_max: <span id="r-max-val">250.0</span></label>
-                <input type="range" id="r-max" min="100" max="500" step="10" value="250">
+                <label for="r-max">r_max: <span id="r-max-val">36</span></label>
+                <input type="range" id="r-max" min="10" max="100" step="1" value="36">
             </div>
 
             <div class="control-group">
                 <label for="random-ratio">N_R/N_D: <span id="random-ratio-val">5</span></label>
-                <input type="range" id="random-ratio" min="1" max="20" step="1" value="5">
+                <input type="range" id="random-ratio" min="1" max="10" step="1" value="5">
             </div>
 
             <div class="control-group">
@@ -89,8 +90,20 @@
                 <button class="tab active" data-tab="xi">&#x03BE;(r)</button>
                 <button class="tab" data-tab="r2xi">r&#xB2;&#x03BE;(r)</button>
                 <button class="tab" data-tab="cdf">kNN-CDF</button>
+                <button class="tab" data-tab="pdf">kNN-PDF</button>
                 <button class="tab" data-tab="dilution">Dilution</button>
             </nav>
+            <div class="scale-toolbar">
+                <span class="scale-label">X:</span>
+                <button class="scale-btn active" data-axis="x" data-mode="linear">lin</button>
+                <button class="scale-btn" data-axis="x" data-mode="log">log</button>
+                <button class="scale-btn" data-axis="x" data-mode="symlog">sym</button>
+                <span class="scale-sep"></span>
+                <span class="scale-label">Y:</span>
+                <button class="scale-btn active" data-axis="y" data-mode="linear">lin</button>
+                <button class="scale-btn" data-axis="y" data-mode="log">log</button>
+                <button class="scale-btn" data-axis="y" data-mode="symlog">sym</button>
+            </div>
 
             <div id="plot-area">
                 <div id="plot-xi" class="plot-content active">
@@ -102,6 +115,10 @@
                 <div id="plot-cdf" class="plot-content">
                     <p class="placeholder">kNN-CDF: empirical cumulative distributions of k-th nearest neighbor distances.<br>
                     <em>Unique to the kNN method — pair counting cannot produce this.</em></p>
+                </div>
+                <div id="plot-pdf" class="plot-content">
+                    <p class="placeholder">kNN-PDF: dCDF/dr — peaked form showing characteristic neighbor distances.<br>
+                    <em>Derivative of kNN-CDF, compared with analytic Erlang PDF.</em></p>
                 </div>
                 <div id="plot-dilution" class="plot-content">
                     <p class="placeholder">Dilution ladder: model-free variance estimates from random subsamples.<br>

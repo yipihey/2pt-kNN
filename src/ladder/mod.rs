@@ -135,6 +135,27 @@ impl DilutionLadder {
         k_max.min(n_sub / 4)
     }
 
+    /// Build a reverse lookup: for each original data point, which subsample
+    /// does it belong to at each dilution level?
+    ///
+    /// Returns `Vec<Vec<Option<usize>>>` indexed as `[level_idx][point_idx]`,
+    /// giving `Some(subsample_idx)` or `None` if the point was dropped due to
+    /// integer truncation at that level.
+    pub fn inverse_map(&self, n_data: usize) -> Vec<Vec<Option<usize>>> {
+        self.levels
+            .iter()
+            .map(|level| {
+                let mut map = vec![None; n_data];
+                for (sub_idx, sub) in level.subsamples.iter().enumerate() {
+                    for &pt_idx in sub {
+                        map[pt_idx] = Some(sub_idx);
+                    }
+                }
+                map
+            })
+            .collect()
+    }
+
     /// Compute bin edges for a specific dilution level.
     ///
     /// Level 0: `[r_min, r_char_knn(k_max, 1, nbar)]`

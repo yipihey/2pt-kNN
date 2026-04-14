@@ -23,7 +23,7 @@ fn main() {
         let cfg = FFTLogConfig {
             n, ln_k_min: (1e-5_f64).ln(), ln_k_max: (50.0_f64).ln(), lowring: true,
         };
-        let tables = build_xi_tables(&cosmo, cfg, false, false);
+        let tables = build_xi_tables(&cosmo, cfg, false, false, false);
         let r = xi_bar_from_xi(&tables.xi_pk, 80.0, 64);
         println!("  n={:>6}  xi_bar(80) = {:.9}", n, r);
     }
@@ -40,7 +40,7 @@ fn main() {
             ln_k_max: 10_f64.powf(kmax_log).ln(),
             lowring: true,
         };
-        let tables = build_xi_tables(&cosmo, cfg, false, false);
+        let tables = build_xi_tables(&cosmo, cfg, false, false, false);
         let r = xi_bar_from_xi(&tables.xi_pk, 80.0, 64);
         println!("  k=[1e{}, 1e{}], n={:>6}  xi_bar(80) = {:.9}",
                  kmin_log, kmax_log, n, r);

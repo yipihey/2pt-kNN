@@ -330,6 +330,12 @@ pub struct XiTables {
     /// ξ(r) from P_L(k) × I_P13(k) — for one-loop P₁₃ corrections (ξ̄ cross-spectrum).
     /// Populated when `with_p13 = true`.
     pub xi_p13_eff: Option<XiTable>,
+    /// ξ(r) from I_{b₂}(k) — for the one-loop b₂ correction to ξ̄_J.
+    /// Populated when `with_bias_cross = true`.
+    pub xi_p22_cross_b2: Option<XiTable>,
+    /// ξ(r) from I_{bs²}(k) — for the one-loop b_{s²} correction to ξ̄_J.
+    /// Populated when `with_bias_cross = true`.
+    pub xi_p22_cross_bs2: Option<XiTable>,
     /// Log-k grid parameters (for diagnostics).
     pub ln_k_min: f64,
     pub ln_k_max: f64,
@@ -362,11 +368,14 @@ impl Default for FFTLogConfig {
 ///
 /// * `with_counterterms = true` also builds ξ_{k² P_L} and ξ_{k⁴ P_L}
 ///    (cheap — two extra FFTLog calls).
-/// * `with_p13 = true` also builds ξ_P13_eff for one-loop corrections.
+/// * `with_p13 = true` also builds ξ_P13_eff for one-loop P₁₃ corrections.
 ///    Moderately expensive: the 3D I_P13(k) kernel is computed at n points.
+/// * `with_bias_cross = true` additionally builds ξ_{P22,cross,b₂} and
+///    ξ_{P22,cross,bs²} for the one-loop b₂ and b_{s²} corrections to ξ̄_J.
+///    Similar cost to the P₁₃ table.
 pub fn build_xi_tables(
     cosmo: &crate::Cosmology, cfg: FFTLogConfig,
-    with_counterterms: bool, with_p13: bool,
+    with_counterterms: bool, with_p13: bool, with_bias_cross: bool,
 ) -> XiTables {
     let n = cfg.n;
     assert!(n.is_power_of_two(), "n must be a power of 2");
@@ -389,23 +398,39 @@ pub fn build_xi_tables(
         (None, None)
     };
 
-    let xi_p13_eff = if with_p13 {
+    let (xi_p13_eff, xi_p22_cross_b2, xi_p22_cross_bs2) = if with_p13 || with_bias_cross {
         let mut ws = crate::Workspace::new(4000);
         ws.update_cosmology(cosmo);
         let ip_inner = crate::integrals::IntegrationParams {
             n_k: 0, n_p: 300, n_mu: 48,
             ln_k_min: cfg.ln_k_min, ln_k_max: cfg.ln_k_max,
         };
-        let pk_eff = crate::integrals::p13_effective_pk_table(
-            &ws, &ip_inner, cfg.ln_k_min, cfg.ln_k_max, n
-        );
-        Some(xi_from_pk_loglog(cfg.ln_k_min, cfg.ln_k_max, &pk_eff, cfg.lowring))
+        let xi_p13 = if with_p13 {
+            let pk_eff = crate::integrals::p13_effective_pk_table(
+                &ws, &ip_inner, cfg.ln_k_min, cfg.ln_k_max, n,
+            );
+            Some(xi_from_pk_loglog(cfg.ln_k_min, cfg.ln_k_max, &pk_eff, cfg.lowring))
+        } else { None };
+        let (xi_b2, xi_bs2) = if with_bias_cross {
+            let pk_b2 = crate::integrals::p22_cross_b2_effective_pk_table(
+                &ws, &ip_inner, cfg.ln_k_min, cfg.ln_k_max, n,
+            );
+            let pk_bs2 = crate::integrals::p22_cross_bs2_effective_pk_table(
+                &ws, &ip_inner, cfg.ln_k_min, cfg.ln_k_max, n,
+            );
+            (
+                Some(xi_from_pk_loglog(cfg.ln_k_min, cfg.ln_k_max, &pk_b2, cfg.lowring)),
+                Some(xi_from_pk_loglog(cfg.ln_k_min, cfg.ln_k_max, &pk_bs2, cfg.lowring)),
+            )
+        } else { (None, None) };
+        (xi_p13, xi_b2, xi_bs2)
     } else {
-        None
+        (None, None, None)
     };
 
     XiTables {
         xi_pk, xi_k2_pk, xi_k4_pk, xi_p13_eff,
+        xi_p22_cross_b2, xi_p22_cross_bs2,
         ln_k_min: cfg.ln_k_min, ln_k_max: cfg.ln_k_max, n,
     }
 }
@@ -605,7 +630,7 @@ mod tests {
             ln_k_max: (50.0_f64).ln(),
             lowring: true,
         };
-        let tables = build_xi_tables(&cosmo, cfg, false, false);
+        let tables = build_xi_tables(&cosmo, cfg, false, false, false);
 
         // Trapezoidal reference: fine grid.
         let mut ws = Workspace::new(8000);
@@ -639,7 +664,7 @@ mod tests {
             ln_k_max: (50.0_f64).ln(),
             lowring: true,
         };
-        let tables = build_xi_tables(&cosmo, cfg, false, false);
+        let tables = build_xi_tables(&cosmo, cfg, false, false, false);
 
         let mut ws = Workspace::new(8000);
         ws.update_cosmology(&cosmo);
@@ -667,7 +692,7 @@ mod tests {
     fn fftlog_bao_smoothness() {
         use crate::Cosmology;
         let cosmo = Cosmology::planck2018();
-        let tables = build_xi_tables(&cosmo, FFTLogConfig::default(), false, false);
+        let tables = build_xi_tables(&cosmo, FFTLogConfig::default(), false, false, false);
 
         // Dense R grid: 500 points in [100, 200] Mpc/h
         let n_r = 500;

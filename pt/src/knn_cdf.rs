@@ -845,6 +845,53 @@ mod tests {
         }
     }
 
+    // ─── Phase 3: biased F₂ one-loop correction ─────────────────────────
+
+    #[test]
+    fn phase3_zero_bias_preserves_b1_only() {
+        // At b2=bs2=0 the new one-loop pieces must vanish exactly, so a
+        // (b1=1, b2=0, bs2=0) call reproduces (b1=1)-only behaviour bit-for-bit.
+        use crate::{Cosmology, xibar_j_full, xibar_j_full_bias};
+        use crate::doroshkevich::BiasParams;
+        let cosmo = Cosmology::planck2018();
+        for &r in &[5.0_f64, 10.0, 20.0, 50.0] {
+            let legacy = xibar_j_full(&cosmo, r, 1.0, 3);
+            let bias_call = xibar_j_full_bias(&cosmo, r,
+                                              BiasParams::b1_only(1.0), 3);
+            assert_eq!(bias_call.xibar_1loop_b2, 0.0,
+                       "b₂=0 must give xibar_1loop_b2 = 0 (got {})",
+                       bias_call.xibar_1loop_b2);
+            assert_eq!(bias_call.xibar_1loop_bs2, 0.0,
+                       "b_{{s²}}=0 must give xibar_1loop_bs2 = 0 (got {})",
+                       bias_call.xibar_1loop_bs2);
+            // xibar_full must match legacy b1-only behaviour (no new contribution).
+            assert!((bias_call.xibar_full - legacy.xibar_full).abs() < 1e-12,
+                    "xibar_full drifted: legacy {} vs bias-call {} at R={}",
+                    legacy.xibar_full, bias_call.xibar_full, r);
+        }
+    }
+
+    #[test]
+    fn phase3_b2_bs2_piece_scales() {
+        // Diagnostic: print the b₂ and b_{s²} one-loop values across R so we
+        // can sanity-check scales. Expected: O(b · ε · σ²) ≈ 10⁻³–10⁻¹.
+        use crate::{Cosmology, xibar_j_full_bias};
+        use crate::doroshkevich::BiasParams;
+        let cosmo = Cosmology::planck2018();
+        for &r in &[5.0_f64, 10.0, 20.0, 30.0, 50.0] {
+            let d_b2 = xibar_j_full_bias(&cosmo, r,
+                BiasParams { b1: 0.0, b2: 1.0, bs2: 0.0 }, 3);
+            let d_bs2 = xibar_j_full_bias(&cosmo, r,
+                BiasParams { b1: 0.0, b2: 0.0, bs2: 1.0 }, 3);
+            println!("R={:>5.1}  σ²_s={:8.5}  xibar_1loop_b2={:+12.5e}  xibar_1loop_bs2={:+12.5e}",
+                     r, d_b2.sigma2_lin, d_b2.xibar_1loop_b2, d_bs2.xibar_1loop_bs2);
+            assert!(d_b2.xibar_1loop_b2.abs() > 0.0,
+                    "b₂ piece should be non-zero at R={}", r);
+            assert!(d_bs2.xibar_1loop_bs2.abs() > 0.0,
+                    "b_{{s²}} piece should be non-zero at R={}", r);
+        }
+    }
+
     // ─── Bias-expansion tests ────────────────────────────────────────────
 
     #[test]

@@ -1128,6 +1128,8 @@ fn handle_xibar_j_full(state: &mut ServerState, args: &Value) -> Result<Value, S
         "epsilon": r.epsilon,
         "m12": r.m12,
         "m_s2": r.m_s2,
+        "xibar_1loop_b2": r.xibar_1loop_b2,
+        "xibar_1loop_bs2": r.xibar_1loop_bs2,
     })).collect();
     Ok(json!(out))
 }

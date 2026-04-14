@@ -172,6 +172,125 @@ pub fn p13_effective_pk_table(
     }).collect()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// P₂₂-cross kernels for the Lagrangian bias expansion (b₂ and b_{s²})
+//
+// The one-loop correction to the biased Jacobian cross-spectrum ξ̄_J picks up
+// a P₂₂-type term. In the Lagrangian/Jacobian framework used throughout this
+// crate, the relevant F₂ is the Jacobian kernel
+//     F₂^{(J)}(p, q) = (2/7)(1 − ν²),  ν = p̂·q̂
+// NOT the full SPT F₂ (which contains (p/q + q/p) terms absorbed elsewhere
+// into the Zel'dovich flow / polynomial-LPT structure, and whose IR
+// divergences cancel only after adding the corresponding P₁₃ piece). The
+// Jacobian F₂^{(J)} is IR-safe and matches the tidal structure already used
+// by `sigma2_p22_raw_ws` in this crate. With this choice,
+//
+//   F₂,bias(p, q) = b₂/2 + b_{s²} S₂(p, q),   S₂ = ν² − 1/3
+//   P₂₂,cross(k) = 2 ∫ F₂^{(J)} · F₂,bias · P_L(p) P_L(|k−p|) d³p/(2π)³
+//                = b₂ · I_{b₂}(k) + b_{s²} · I_{bs²}(k)
+//
+// where (after substituting F₂^{(J)} = (2/7)(1−ν²))
+//   I_{b₂}(k)  =     ∫ (2/7)(1−ν²) · P_L(p) P_L(q) d³p/(2π)³
+//   I_{bs²}(k) = 2 ∫ (2/7)(1−ν²) · (ν² − 1/3) · P_L(p) P_L(q) d³p/(2π)³
+// with q = k − p, q² = k² + p² − 2kpμ, ν = (kμ − p)/q, and the measure
+// d³p/(2π)³ → p²/(4π²) dp dμ for axially-symmetric integrands.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Inner (p, μ) integral for P₂₂,cross,b₂ at fixed k (Jacobian F₂^{(J)}).
+pub fn p22_cross_b2_inner_kernel(
+    k: f64, ws: &Workspace, ip: &IntegrationParams,
+) -> f64 {
+    use rayon::prelude::*;
+    let (np, nmu) = (ip.n_p, ip.n_mu);
+    let dlp = (ip.ln_k_max - ip.ln_k_min) / np as f64;
+    let dmu = 2.0 / nmu as f64;
+    let c_outer = 1.0 / (4.0 * PI * PI);
+    let k2 = k * k;
+    let inner: f64 = (0..=np).into_par_iter().map(|ip2| {
+        let p = (ip.ln_k_min + ip2 as f64 * dlp).exp();
+        let wp = if ip2 == 0 || ip2 == np { 0.5 } else { 1.0 };
+        let plp = ws.p_lin(p);
+        if plp < 1e-30 { return 0.0; }
+        let p2 = p * p;
+        let mut ms = 0.0;
+        for jm in 0..=nmu {
+            let mu = -1.0 + jm as f64 * dmu;
+            let wm = if jm == 0 || jm == nmu { 0.5 } else { 1.0 };
+            let q2 = k2 + p2 - 2.0 * k * p * mu;
+            if q2 < 1e-20 { continue; }
+            let q = q2.sqrt();
+            let plq = ws.p_lin(q);
+            if plq < 1e-30 { continue; }
+            let nu = (k * mu - p) / q;
+            let f2j = (2.0 / 7.0) * (1.0 - nu * nu);
+            ms += wm * f2j * plq;
+        }
+        wp * p * p2 * plp * ms * dmu
+    }).sum();
+    inner * c_outer * dlp
+}
+
+/// Inner (p, μ) integral for P₂₂,cross,b_{s²} at fixed k (Jacobian F₂^{(J)}).
+pub fn p22_cross_bs2_inner_kernel(
+    k: f64, ws: &Workspace, ip: &IntegrationParams,
+) -> f64 {
+    use rayon::prelude::*;
+    let (np, nmu) = (ip.n_p, ip.n_mu);
+    let dlp = (ip.ln_k_max - ip.ln_k_min) / np as f64;
+    let dmu = 2.0 / nmu as f64;
+    let c_outer = 1.0 / (4.0 * PI * PI);
+    let k2 = k * k;
+    let inner: f64 = (0..=np).into_par_iter().map(|ip2| {
+        let p = (ip.ln_k_min + ip2 as f64 * dlp).exp();
+        let wp = if ip2 == 0 || ip2 == np { 0.5 } else { 1.0 };
+        let plp = ws.p_lin(p);
+        if plp < 1e-30 { return 0.0; }
+        let p2 = p * p;
+        let mut ms = 0.0;
+        for jm in 0..=nmu {
+            let mu = -1.0 + jm as f64 * dmu;
+            let wm = if jm == 0 || jm == nmu { 0.5 } else { 1.0 };
+            let q2 = k2 + p2 - 2.0 * k * p * mu;
+            if q2 < 1e-20 { continue; }
+            let q = q2.sqrt();
+            let plq = ws.p_lin(q);
+            if plq < 1e-30 { continue; }
+            let nu = (k * mu - p) / q;
+            let f2j = (2.0 / 7.0) * (1.0 - nu * nu);
+            let s2 = nu * nu - 1.0 / 3.0;
+            ms += wm * f2j * s2 * plq;
+        }
+        wp * p * p2 * plp * ms * dmu
+    }).sum();
+    2.0 * inner * c_outer * dlp
+}
+
+/// Tabulate I_{b₂}(k) on a log-k grid (FFTLog input).
+pub fn p22_cross_b2_effective_pk_table(
+    ws: &Workspace, ip: &IntegrationParams,
+    ln_k_min: f64, ln_k_max: f64, n: usize,
+) -> Vec<f64> {
+    use rayon::prelude::*;
+    let dlnk = (ln_k_max - ln_k_min) / (n - 1) as f64;
+    (0..n).into_par_iter().map(|i| {
+        let k = (ln_k_min + i as f64 * dlnk).exp();
+        p22_cross_b2_inner_kernel(k, ws, ip)
+    }).collect()
+}
+
+/// Tabulate I_{bs²}(k) on a log-k grid (FFTLog input).
+pub fn p22_cross_bs2_effective_pk_table(
+    ws: &Workspace, ip: &IntegrationParams,
+    ln_k_min: f64, ln_k_max: f64, n: usize,
+) -> Vec<f64> {
+    use rayon::prelude::*;
+    let dlnk = (ln_k_max - ln_k_min) / (n - 1) as f64;
+    (0..n).into_par_iter().map(|i| {
+        let k = (ln_k_min + i as f64 * dlnk).exp();
+        p22_cross_bs2_inner_kernel(k, ws, ip)
+    }).collect()
+}
+
 /// P₁₃ kernel integral smoothed with single W(kR) — for ξ̄ cross-spectrum.
 /// Same as sigma2_p13_raw_ws but W(kR) instead of W²(kR).
 ///

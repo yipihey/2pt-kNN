@@ -111,7 +111,7 @@ fn main() {
     header("C2. Monotonicity");
     // ═══════════════════════════════════════════════════════════════════
     // C2a: σ²(R) monotonically decreasing in R
-    let xi_tables = build_xi_tables(&cosmo, FFTLogConfig::default(), false, false);
+    let xi_tables = build_xi_tables(&cosmo, FFTLogConfig::default(), false, false, false);
     let r_grid: Vec<f64> = (0..30).map(|i| {
         let f = i as f64 / 29.0;
         (2.0_f64.ln() * (1.0 - f) + 200.0_f64.ln() * f).exp()

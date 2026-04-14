@@ -51,7 +51,7 @@ fn main() {
         n_k: 8000, n_p: 200, n_mu: 48,
         ln_k_min: (1e-5_f64).ln(), ln_k_max: (50.0_f64).ln(),
     };
-    let xi_tables = build_xi_tables(&cosmo, FFTLogConfig::default(), true, false);
+    let xi_tables = build_xi_tables(&cosmo, FFTLogConfig::default(), true, false, false);
 
     println!("    R     trap σ²_lin    FFTLog σ²_lin   rel err");
     let mut max_err = 0.0_f64;

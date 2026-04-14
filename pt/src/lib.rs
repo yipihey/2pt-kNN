@@ -310,7 +310,7 @@ pub fn sigma2_j_full(
     let mut ws = Workspace::new(3000);
     ws.update_cosmology(cosmo);
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(),
-                                             false, false);
+                                             false, false, false);
     sigma2_j_with_workspace(&ws, &xi_tables, &ip, cosmo.omega_m,
                             r, n_lpt, c_j2, c_j4, compute_diagnostics, compute_bispec)
 }
@@ -441,7 +441,7 @@ pub fn sigma2_j_plot(
     let mut ws = Workspace::new(3000);
     ws.update_cosmology(cosmo);
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(),
-                                             false, false);
+                                             false, false, false);
     default_radii().par_iter()
         .map(|&r| sigma2_j_with_workspace(&ws, &xi_tables, &ip, cosmo.omega_m,
                                           r, n_lpt, c_j2, c_j4,
@@ -461,7 +461,7 @@ pub fn sigma2_j_plot_masses(
     ws.update_cosmology(cosmo);
     let om = cosmo.omega_m;
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(),
-                                             false, false);
+                                             false, false, false);
     default_masses().par_iter()
         .map(|&m| sigma2_j_with_workspace(&ws, &xi_tables, &ip, om,
                                           mass_to_radius(m, om), n_lpt, c_j2, c_j4,
@@ -481,7 +481,7 @@ pub fn sigma2_j_plot_at_masses(
     ws.update_cosmology(cosmo);
     let om = cosmo.omega_m;
     let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(),
-                                             false, false);
+                                             false, false, false);
     masses.par_iter()
         .map(|&m| sigma2_j_with_workspace(&ws, &xi_tables, &ip, om,
                                           mass_to_radius(m, om), n_lpt, c_j2, c_j4,
@@ -530,6 +530,10 @@ pub struct XibarJDetailed {
     pub m12: f64,
     /// Unbiased cross-moment M_{s²}(R). Enters ξ̄ at O(b_{s²}).
     pub m_s2: f64,
+    /// One-loop b₂ correction: b₂ × Ξ_{b₂}(R). Zero when b₂ = 0.
+    pub xibar_1loop_b2: f64,
+    /// One-loop b_{s²} correction: b_{s²} × Ξ_{bs²}(R). Zero when b_{s²} = 0.
+    pub xibar_1loop_bs2: f64,
 }
 
 /// Compute ξ̄_J at a single radius with full three-layer prediction.
@@ -614,8 +618,23 @@ fn xibar_j_with_workspace(
     // Layer 3: geometric series in ε = (3/7)² σ²_s
     let eps = (3.0 / 7.0_f64).powi(2) * sigma2_s;
 
+    // One-loop b₂ and b_{s²} corrections from the biased F₂ kernel in the
+    // cross-spectrum P₂₂-type piece. R-independent effective "pseudo P(k)"s
+    // are precomputed in xi_tables and converted to ξ(r) via FFTLog; the
+    // single-W R smoothing is the same as for the tree-level ξ̄.
+    let xibar_1loop_b2 = if bias.b2 != 0.0 {
+        if let Some(ref xi_b2) = xi_tables.xi_p22_cross_b2 {
+            bias.b2 * k1 * fftlog::xi_bar_from_xi(xi_b2, r, 64)
+        } else { 0.0 }
+    } else { 0.0 };
+    let xibar_1loop_bs2 = if bias.bs2 != 0.0 {
+        if let Some(ref xi_bs2) = xi_tables.xi_p22_cross_bs2 {
+            bias.bs2 * k1 * fftlog::xi_bar_from_xi(xi_bs2, r, 64)
+        } else { 0.0 }
+    } else { 0.0 };
+
     let xibar_full = if n_corrections == 0 {
-        xibar_zel
+        xibar_zel + xibar_1loop_b2 + xibar_1loop_bs2
     } else {
         let mut series_sum = xibar_1loop;
         let mut term = xibar_1loop;
@@ -623,7 +642,10 @@ fn xibar_j_with_workspace(
             term *= -eps;
             series_sum += term;
         }
-        xibar_zel + series_sum
+        // b₂ / b_{s²} pieces are distinct loop structures, not in the Zel'dovich
+        // geometric-series ladder — they add linearly on top of the resummed
+        // b₁ tower.
+        xibar_zel + series_sum + xibar_1loop_b2 + xibar_1loop_bs2
     };
 
     XibarJDetailed {
@@ -633,6 +655,7 @@ fn xibar_j_with_workspace(
         sigma2_lin: sigma2_s,
         epsilon: eps,
         m12: cross.m12, m_s2: cross.m_s2,
+        xibar_1loop_b2, xibar_1loop_bs2,
     }
 }
 
@@ -650,7 +673,7 @@ pub fn xibar_j_full_bias(
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
-    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
+    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true, true);
     xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, bias, n_corrections, None)
 }
 
@@ -670,7 +693,7 @@ pub fn xibar_j_full_rsd_bias(
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
-    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
+    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true, true);
     xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop, r, bias, n_corrections, Some(rsd))
 }
 
@@ -689,7 +712,7 @@ pub fn xibar_j_plot_bias(
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
-    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
+    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true, true);
     radii.par_iter()
         .map(|&r| xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop,
                                          r, bias, n_corrections, None))
@@ -713,7 +736,7 @@ pub fn xibar_j_plot_rsd_bias(
     let (ip_hires, ip_loop) = xibar_j_integration_params();
     let mut ws = Workspace::new(4000);
     ws.update_cosmology(cosmo);
-    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true);
+    let xi_tables = fftlog::build_xi_tables(cosmo, fftlog::FFTLogConfig::default(), false, true, true);
     radii.par_iter()
         .map(|&r| xibar_j_with_workspace(&ws, &xi_tables, &ip_hires, &ip_loop,
                                          r, bias, n_corrections, Some(rsd)))

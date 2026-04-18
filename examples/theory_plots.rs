@@ -53,6 +53,24 @@ fn main() {
     std::fs::write(&path, &svg).unwrap();
     eprintln!("  → {} ({} bytes)", path, svg.len());
 
+    eprintln!("Rendering Edgeworth convergence at σ²=0.1 (3LPT)...");
+    let svg = theory_plots::render_edgeworth_convergence(0.1, 3);
+    let path = format!("{}/theory_edgeworth_convergence_s01.svg", out_dir);
+    std::fs::write(&path, &svg).unwrap();
+    eprintln!("  → {} ({} bytes)", path, svg.len());
+
+    eprintln!("Rendering Edgeworth convergence at σ²=0.3 (3LPT)...");
+    let svg = theory_plots::render_edgeworth_convergence(0.3, 3);
+    let path = format!("{}/theory_edgeworth_convergence_s03.svg", out_dir);
+    std::fs::write(&path, &svg).unwrap();
+    eprintln!("  → {} ({} bytes)", path, svg.len());
+
+    eprintln!("Rendering Edgeworth convergence at σ²=0.5 (3LPT)...");
+    let svg = theory_plots::render_edgeworth_convergence(0.5, 3);
+    let path = format!("{}/theory_edgeworth_convergence_s05.svg", out_dir);
+    std::fs::write(&path, &svg).unwrap();
+    eprintln!("  → {} ({} bytes)", path, svg.len());
+
     eprintln!("Rendering 4-panel summary...");
     let svg = theory_plots::render_summary(&sigma2_grid);
     let path = format!("{}/theory_summary.svg", out_dir);

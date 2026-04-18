@@ -70,6 +70,10 @@ required-features = ["typst-plots"]
 name = "test_plot_only"
 required-features = ["typst-plots"]
 
+[[example]]
+name = "theory_plots"
+required-features = ["typst-plots"]
+
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
 

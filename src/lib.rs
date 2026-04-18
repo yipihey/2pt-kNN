@@ -28,6 +28,8 @@ pub mod theory;
 
 #[cfg(feature = "typst-plots")]
 pub mod plotting;
+#[cfg(feature = "typst-plots")]
+pub mod theory_plots;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 #[cfg(feature = "wasm")]

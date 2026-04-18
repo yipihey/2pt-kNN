@@ -161,7 +161,7 @@ fn parse_version(s: &str) -> PackageVersion {
 // ---------------------------------------------------------------------------
 
 /// Format an f64 slice as a Typst array literal.
-fn fmt_array(values: &[f64]) -> String {
+pub(crate) fn fmt_array(values: &[f64]) -> String {
     let items: Vec<String> = values.iter().map(|v| format!("{:.8}", v)).collect();
     format!("({})", items.join(", "))
 }

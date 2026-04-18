@@ -24,6 +24,7 @@ pub mod diagnostics;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod corrfunc;
 pub mod validation;
+pub mod theory;
 
 #[cfg(feature = "typst-plots")]
 pub mod plotting;

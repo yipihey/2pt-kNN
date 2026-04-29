@@ -1,0 +1,35 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "pkvol"
+version = "0.1.0"
+description = "Metric-agnostic exact-count P_k galaxy statistics in observable space (RA, Dec, z)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+authors = [
+    { name = "2pt-kNN authors" },
+]
+keywords = ["cosmology", "galaxy", "kNN", "statistics", "angular", "P_k"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+copula = ["scipy>=1.6"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "pkvol._pkvol"
+features = ["pyo3/extension-module"]

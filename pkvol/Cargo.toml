@@ -1,0 +1,39 @@
+[package]
+name = "pkvol"
+version = "0.1.0"
+edition = "2021"
+description = "Metric-agnostic exact-count P_k galaxy statistics in observable space (RA, Dec, z)"
+license = "MIT"
+repository = "https://github.com/yipihey/2pt-knn"
+readme = "README.md"
+
+[lib]
+name = "pkvol"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["python"]
+python = ["dep:pyo3", "dep:numpy"]
+
+[dependencies]
+rayon = "1.10"
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"], optional = true }
+numpy = { version = "0.22", optional = true }
+thiserror = "1"
+rand = { version = "0.8", features = ["std"] }
+rand_chacha = "0.3"
+
+[dev-dependencies]
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = false
+
+[profile.bench]
+inherits = "release"
+
+# Ensure this crate does not get pulled into the parent twopoint workspace
+[workspace]

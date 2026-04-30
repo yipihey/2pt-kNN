@@ -30,6 +30,12 @@ from ._api import (  # noqa: F401
     subsample_randoms,
     apply_marks,
 )
+from .conditional import (  # noqa: F401
+    measure_pk_conditional,
+    measure_pk_R,
+    measure_pk_D,
+    default_F_ref,
+)
 from .copula import (  # noqa: F401
     compute_copula_summary,
     legendre_basis_2d,
@@ -48,6 +54,10 @@ __all__ = [
     "apply_edge_cut",
     "subsample_randoms",
     "apply_marks",
+    "measure_pk_conditional",
+    "measure_pk_R",
+    "measure_pk_D",
+    "default_F_ref",
     "compute_copula_summary",
     "legendre_basis_2d",
     "CompressedCdf1D",

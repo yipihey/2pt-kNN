@@ -6,3 +6,4 @@
 *.so
 *.egg-info/
 build/
+examples/conditional_demo_out/

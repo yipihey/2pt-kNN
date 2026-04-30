@@ -247,6 +247,99 @@ def test_log_base_e_vs_10(small_uniform_catalogs):
     )
 
 
+def test_sparse_k_values_matches_contiguous(small_uniform_catalogs):
+    """Sparse k_values e.g. [1, 3, 6] must produce F, P, medians identical to the
+    same k's sliced from a contiguous k_max=7 run.
+    """
+    cats = small_uniform_catalogs
+    theta_edges, z_edges, s_e, e_e, zq_e = _common_grids()
+    common = dict(
+        ra_gal=cats["ra_d"], dec_gal=cats["dec_d"], z_gal=cats["z_d"],
+        ra_random=cats["ra_r"], dec_random=cats["dec_r"], z_random=cats["z_r"],
+        theta_edges=theta_edges, z_edges=z_edges,
+        s_tilde_edges=s_e, eta_tilde_edges=e_e,
+        z_query_edges=zq_e,
+        n_query_subsample=400,
+        subsample_seed=2026,
+    )
+    out_full = pkvol.measure_pk_R(k_max=7, **common)
+    out_sparse = pkvol.measure_pk_R(k_values=[1, 3, 6], **common)
+    pick = np.array([0, 2, 5])    # 1->0, 3->2, 6->5 in the contiguous array
+    np.testing.assert_array_equal(out_sparse["k_values"], np.array([1, 3, 6]))
+    np.testing.assert_allclose(out_sparse["F"], out_full["F"][pick], equal_nan=True)
+    np.testing.assert_allclose(out_sparse["P"], out_full["P"][pick], equal_nan=True)
+    np.testing.assert_allclose(out_sparse["s_med"], out_full["s_med"][pick], equal_nan=True)
+    np.testing.assert_allclose(out_sparse["eta_med"], out_full["eta_med"][pick], equal_nan=True)
+    np.testing.assert_allclose(
+        out_sparse["denominator"], out_full["denominator"][pick], equal_nan=True
+    )
+
+
+def test_sparse_k_log_spaced(small_uniform_catalogs):
+    """Log-spaced k_values like [1, 3, 10] should run and shape-match user input."""
+    cats = small_uniform_catalogs
+    theta_edges, z_edges, s_e, e_e, zq_e = _common_grids()
+    out = pkvol.measure_pk_R(
+        ra_gal=cats["ra_d"], dec_gal=cats["dec_d"], z_gal=cats["z_d"],
+        ra_random=cats["ra_r"], dec_random=cats["dec_r"], z_random=cats["z_r"],
+        theta_edges=theta_edges, z_edges=z_edges,
+        s_tilde_edges=s_e, eta_tilde_edges=e_e,
+        z_query_edges=zq_e,
+        n_query_subsample=300,
+        k_values=[1, 3, 10],
+    )
+    assert out["P"].shape[0] == 3
+    assert out["k_values"].tolist() == [1, 3, 10]
+    # F_next must be present and same shape as F.
+    assert out["F_next"].shape == out["F"].shape
+    assert out["denominator_next"].shape == out["denominator"].shape
+    # P = F - F_next pointwise.
+    np.testing.assert_allclose(
+        out["P"], out["F"] - out["F_next"], equal_nan=True
+    )
+
+
+def test_sparse_k_unsorted_dedup(small_uniform_catalogs):
+    """Unsorted/duplicate k_values are sorted and de-duplicated."""
+    cats = small_uniform_catalogs
+    theta_edges, z_edges, s_e, e_e, zq_e = _common_grids()
+    out = pkvol.measure_pk_R(
+        ra_gal=cats["ra_d"], dec_gal=cats["dec_d"], z_gal=cats["z_d"],
+        ra_random=cats["ra_r"], dec_random=cats["dec_r"], z_random=cats["z_r"],
+        theta_edges=theta_edges, z_edges=z_edges,
+        s_tilde_edges=s_e, eta_tilde_edges=e_e,
+        z_query_edges=zq_e,
+        n_query_subsample=200,
+        k_values=[5, 1, 3, 1, 5],
+    )
+    assert out["k_values"].tolist() == [1, 3, 5]
+
+
+def test_sparse_k_invalid():
+    """k_values must be positive integers."""
+    rng = np.random.default_rng(3)
+    L = 0.3
+    n = 50
+    ra = rng.uniform(0, L, n); dec = rng.uniform(-L/2, L/2, n); z = rng.uniform(0.1, 0.9, n)
+    theta_edges = np.array([0.01, 0.02])
+    z_edges = np.array([0.1, 0.5, 0.9])
+    s_e = np.linspace(-1, 1, 5); e_e = np.linspace(-1, 1, 5); zq_e = np.array([0.1, 0.9])
+    common = dict(
+        ra_gal=ra, dec_gal=dec, z_gal=z,
+        ra_random=ra, dec_random=dec, z_random=z,
+        theta_edges=theta_edges, z_edges=z_edges,
+        s_tilde_edges=s_e, eta_tilde_edges=e_e,
+        z_query_edges=zq_e,
+        n_query_subsample=20,
+    )
+    with pytest.raises(ValueError):
+        pkvol.measure_pk_R(k_values=[0, 1], **common)
+    with pytest.raises(ValueError):
+        pkvol.measure_pk_R(k_values=[-1, 2], **common)
+    with pytest.raises(ValueError):
+        pkvol.measure_pk_R(k_values=[], **common)
+
+
 def test_diagnostics_keys(small_uniform_catalogs):
     cats = small_uniform_catalogs
     theta_edges, z_edges, s_e, e_e, zq_e = _common_grids()

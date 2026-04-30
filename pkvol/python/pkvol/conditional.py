@@ -85,6 +85,25 @@ def _delta_z_per_shell(z_edges: _ARR, intervals: Sequence[Tuple[int, int]]) -> _
     return out
 
 
+def _resolve_k_values(k_values: Optional[Sequence[int]], k_max: int) -> np.ndarray:
+    """Resolve the user-requested k axis.
+
+    If ``k_values`` is given, use those (sorted, unique, positive int).
+    Otherwise default to ``1..k_max`` contiguous.
+    """
+    if k_values is None:
+        if k_max <= 0:
+            raise ValueError("k_max must be a positive integer")
+        return np.arange(1, int(k_max) + 1, dtype=np.int64)
+    arr = np.asarray(k_values, dtype=np.int64)
+    if arr.ndim != 1 or arr.size == 0:
+        raise ValueError("k_values must be a non-empty 1D sequence of positive integers")
+    arr = np.unique(arr)
+    if (arr <= 0).any():
+        raise ValueError("k_values entries must be positive integers")
+    return arr
+
+
 def _shell_contains(z_edges: _ARR, intervals: Sequence[Tuple[int, int]], z_q: _ARR) -> _ARR:
     """Boolean array [n_q, n_int]: True where z_q is in shell (z_lo, z_hi]."""
     z_q = np.asarray(z_q, dtype=np.float64)
@@ -131,8 +150,10 @@ def measure_pk_conditional(
     angular_variable: str = "omega",
     theta_max: Optional[float] = None,
     backend: str = "ecdf",
-    # k axis
+    # k axis: pass k_values for sparse / log-spaced sampling (e.g. [1, 3, 10, 30]),
+    # or k_max for the default contiguous 1..k_max. k_values takes precedence.
     k_max: int = 8,
+    k_values: Optional[Sequence[int]] = None,
     # centered binning
     s_tilde_edges: _ARR,
     eta_tilde_edges: _ARR,
@@ -301,40 +322,50 @@ def measure_pk_conditional(
     z_bin_q = np.digitize(z_q, zq_e, right=False) - 1       # (n_q,)
     z_bin_q = np.where((z_q >= zq_e[0]) & (z_q < zq_e[-1]), z_bin_q, -1)
 
-    # ---------- 8. Per-(k, z_bin) medians ----------
-    n_k_internal = k_max + 1     # need F_{k_max+1} to compute P_{k_max}
-    s_med = np.full((n_k_internal, n_zq), np.nan, dtype=np.float64)
-    eta_med = np.full((n_k_internal, n_zq), np.nan, dtype=np.float64)
+    # ---------- 8. Resolve k axis ----------
+    # k_user is the user-requested set (sparse OK). To compute P_k = F_k - F_{k+1}
+    # we also need F at k+1 for every k_user, so the *internal* k set is the
+    # union of k_user and k_user + 1. F, denom, medians are computed on
+    # k_internal; outputs are sliced down to k_user at the end.
+    k_user = _resolve_k_values(k_values, k_max)
+    k_internal = np.unique(np.concatenate([k_user, k_user + 1])).astype(np.int64)
+    n_k_int = int(k_internal.size)
+    k_to_idx = {int(k): i for i, k in enumerate(k_internal)}
+    user_idx = np.array([k_to_idx[int(k)] for k in k_user], dtype=np.int64)
+    next_idx = np.array([k_to_idx[int(k) + 1] for k in k_user], dtype=np.int64)
+
+    # ---------- 9. Per-(k, z_bin) medians ----------
+    s_med = np.full((n_k_int, n_zq), np.nan, dtype=np.float64)
+    eta_med = np.full((n_k_int, n_zq), np.nan, dtype=np.float64)
 
     # Broadcast z_bin_q to per-cell shape for masking in pass 1.
     z_bin_cell = np.broadcast_to(z_bin_q[:, None, None], s.shape)
 
-    for k_idx in range(n_k_internal):
-        k_val = k_idx + 1
+    for ki, k_val in enumerate(k_internal):
+        k_val_i = int(k_val)
         for zb in range(n_zq):
-            mask = valid_se & (N >= k_val) & (z_bin_cell == zb)
+            mask = valid_se & (N >= k_val_i) & (z_bin_cell == zb)
             if mask.any():
-                s_med[k_idx, zb] = float(np.median(s[mask]))
-                eta_med[k_idx, zb] = float(np.median(eta[mask]))
+                s_med[ki, zb] = float(np.median(s[mask]))
+                eta_med[ki, zb] = float(np.median(eta[mask]))
 
-    # ---------- 9. Centered binning (pass 2) ----------
+    # ---------- 10. Centered binning (pass 2) ----------
     n_s = s_e.size - 1
     n_e = e_e.size - 1
-    F_num = np.zeros((n_k_internal, n_s, n_e, n_zq), dtype=np.float64)
-    denom = np.zeros((n_k_internal, n_s, n_e, n_zq), dtype=np.float64)
+    F_num = np.zeros((n_k_int, n_s, n_e, n_zq), dtype=np.float64)
+    denom = np.zeros((n_k_int, n_s, n_e, n_zq), dtype=np.float64)
 
     if return_diagnostics:
         diag_lambda_sum = np.zeros_like(F_num)
         diag_N_sum = np.zeros_like(F_num)
         diag_eta_sum = np.zeros_like(F_num)
         diag_count = np.zeros_like(F_num)
-        used_per_kbin = np.zeros((n_k_internal, n_zq), dtype=np.float64)
+        used_per_kbin = np.zeros((n_k_int, n_zq), dtype=np.float64)
         total_per_zbin = np.zeros(n_zq, dtype=np.float64)
-        n_q_total = float(ra_q.size) * float(th_e.size) * float(len(intervals))
         # total_per_zbin[zb] = total weight of cells with z_q in zb (regardless of validity)
         for zb in range(n_zq):
-            mask_zb = (z_bin_cell == zb)
-            total_per_zbin[zb] = float((wq[:, None, None] * mask_zb).sum())
+            mask_zb_all = (z_bin_cell == zb)
+            total_per_zbin[zb] = float((wq[:, None, None] * mask_zb_all).sum())
 
     # Per-cell flat arrays once.
     wq_cell = np.broadcast_to(wq[:, None, None], s.shape)
@@ -342,10 +373,10 @@ def measure_pk_conditional(
     N_cell = N
     eta_cell = eta
 
-    for k_idx in range(n_k_internal):
-        k_val = k_idx + 1
-        smk = s_med[k_idx]                    # (n_zq,)
-        emk = eta_med[k_idx]
+    for ki, k_val in enumerate(k_internal):
+        k_val_i = int(k_val)
+        smk = s_med[ki]                       # (n_zq,)
+        emk = eta_med[ki]
         # Skip cells whose z_bin has no median.
         med_valid_zb = np.isfinite(smk) & np.isfinite(emk)
 
@@ -362,26 +393,21 @@ def measure_pk_conditional(
             l_cell = Lambda_cell[mask_zb]
             etav_cell = eta_cell[mask_zb]
 
-            # Bin in (s_tilde, eta_tilde).
             d2, _, _ = np.histogram2d(
-                s_tilde, eta_tilde,
-                bins=(s_e, e_e),
-                weights=w_cell,
+                s_tilde, eta_tilde, bins=(s_e, e_e), weights=w_cell,
             )
-            denom[k_idx, :, :, zb] = d2
+            denom[ki, :, :, zb] = d2
 
-            kk_mask = n_cell >= k_val
+            kk_mask = n_cell >= k_val_i
             if kk_mask.any():
                 f2, _, _ = np.histogram2d(
                     s_tilde[kk_mask], eta_tilde[kk_mask],
-                    bins=(s_e, e_e),
-                    weights=w_cell[kk_mask],
+                    bins=(s_e, e_e), weights=w_cell[kk_mask],
                 )
-                F_num[k_idx, :, :, zb] = f2
+                F_num[ki, :, :, zb] = f2
 
             if return_diagnostics:
-                used_per_kbin[k_idx, zb] = float(d2.sum())
-                # Mean diagnostics: numerator = weighted sum, denominator = unweighted count.
+                used_per_kbin[ki, zb] = float(d2.sum())
                 cnt2, _, _ = np.histogram2d(s_tilde, eta_tilde, bins=(s_e, e_e))
                 lam2, _, _ = np.histogram2d(
                     s_tilde, eta_tilde, bins=(s_e, e_e), weights=l_cell
@@ -392,32 +418,39 @@ def measure_pk_conditional(
                 eta2, _, _ = np.histogram2d(
                     s_tilde, eta_tilde, bins=(s_e, e_e), weights=etav_cell
                 )
-                diag_count[k_idx, :, :, zb] = cnt2
-                diag_lambda_sum[k_idx, :, :, zb] = lam2
-                diag_N_sum[k_idx, :, :, zb] = n2
-                diag_eta_sum[k_idx, :, :, zb] = eta2
+                diag_count[ki, :, :, zb] = cnt2
+                diag_lambda_sum[ki, :, :, zb] = lam2
+                diag_N_sum[ki, :, :, zb] = n2
+                diag_eta_sum[ki, :, :, zb] = eta2
 
-    # ---------- 10. F, P ----------
+    # ---------- 11. F, P (slice to user-requested k) ----------
     with np.errstate(divide="ignore", invalid="ignore"):
         F_full = np.where(denom > 0.0, F_num / denom, np.nan)
-    # Output P, F, denominator at k = 1..k_max only.
-    F_out = F_full[:k_max]
-    P_out = F_full[:k_max] - F_full[1:k_max + 1]
-    denom_out = denom[:k_max]
-    s_med_out = s_med[:k_max]
-    eta_med_out = eta_med[:k_max]
-    k_values = np.arange(1, k_max + 1, dtype=np.int64)
+    # F_user[i] = F at k_user[i]; F_next[i] = F at k_user[i] + 1.
+    F_out = F_full[user_idx]
+    F_next_out = F_full[next_idx]
+    P_out = F_out - F_next_out
+    denom_out = denom[user_idx]
+    denom_next_out = denom[next_idx]
+    s_med_out = s_med[user_idx]
+    eta_med_out = eta_med[user_idx]
+    s_med_next_out = s_med[next_idx]
+    eta_med_next_out = eta_med[next_idx]
 
     out = {
         "P": P_out,
         "F": F_out,
+        "F_next": F_next_out,                # F at k_user + 1; needed for correct marginal plots
         "denominator": denom_out,
+        "denominator_next": denom_next_out,
         "s_med": s_med_out,
         "eta_med": eta_med_out,
+        "s_med_next": s_med_next_out,
+        "eta_med_next": eta_med_next_out,
         "s_tilde_edges": s_e,
         "eta_tilde_edges": e_e,
         "z_query_edges": zq_e,
-        "k_values": k_values,
+        "k_values": k_user,
         "alpha": alpha,
         "query_type": query_type,
         "log_base": log_base,
@@ -440,11 +473,11 @@ def measure_pk_conditional(
                 0.0,
             )
         out["diagnostics"] = {
-            "fraction_used": frac_used[:k_max],
-            "mean_lambda": mean_lambda[:k_max],
-            "mean_N": mean_N[:k_max],
-            "mean_eta": mean_eta[:k_max],
-            "cell_count": diag_count[:k_max],
+            "fraction_used": frac_used[user_idx],
+            "mean_lambda": mean_lambda[user_idx],
+            "mean_N": mean_N[user_idx],
+            "mean_eta": mean_eta[user_idx],
+            "cell_count": diag_count[user_idx],
             "n_query": int(ra_q.size),
             "n_data": int(ra_g.size),
             "n_random": int(ra_r.size),
@@ -554,38 +587,33 @@ def _marginalize(arr: _ARR, axis: int) -> _ARR:
 
 def plot_marginal_s(result: dict, *, ax=None, k_indices: Optional[Sequence[int]] = None,
                     z_bin: int = 0, center: bool = True):
-    """P_k(s_tilde) marginalised over eta_tilde at one z_bin."""
+    """P_k(s_tilde) marginalised over eta_tilde at one z_bin.
+
+    P_marg(s) = (sum_e F_k * denom_k / sum_e denom_k) - (sum_e F_{k+1} * denom_{k+1} / sum_e denom_{k+1}).
+    Uses ``F`` / ``F_next`` and their respective denominators directly so the
+    sparse-k case (e.g. k_values=[1, 3, 10]) is handled correctly.
+    """
     plt = _need_mpl()
     if ax is None:
         _, ax = plt.subplots()
-    P = result["P"]                  # [k, s, e, z]
-    denom = result["denominator"]
-    # Recover joint sum F_num then marginalise: P(s) = sum_e F_num / sum_e denom.
-    F_num = result["F"] * denom
-    # Build P at k by computing F_k(s) - F_{k+1}(s); approximate via P*denom marginalisation.
-    # Simpler: marginalise denom and (F-F_next)*denom separately; here we marginalise
-    # F_num directly (per k) and rely on the per-bin denominator.
+    F = result["F"]; F_next = result["F_next"]
+    denom = result["denominator"]; denom_next = result["denominator_next"]
     s_e = result["s_tilde_edges"]
     s_med = result["s_med"]
-    n_k = P.shape[0]
+    n_k = F.shape[0]
     if k_indices is None:
         k_indices = list(range(n_k))
     s_mid = _midpoints(s_e)
     for k_idx in k_indices:
-        F_marg_num = _marginalize(F_num[k_idx, :, :, z_bin], axis=1)
+        F_num = F[k_idx, :, :, z_bin] * denom[k_idx, :, :, z_bin]
+        F_next_num = F_next[k_idx, :, :, z_bin] * denom_next[k_idx, :, :, z_bin]
+        F_marg_num = _marginalize(F_num, axis=1)
         d_marg = _marginalize(denom[k_idx, :, :, z_bin], axis=1)
-        # Next-k for P
-        if k_idx + 1 < denom.shape[0]:
-            F_next_num = _marginalize(
-                result["F"][k_idx + 1, :, :, z_bin] * denom[k_idx + 1, :, :, z_bin], axis=1
-            )
-            d_next = _marginalize(denom[k_idx + 1, :, :, z_bin], axis=1)
-        else:
-            F_next_num = np.zeros_like(F_marg_num)
-            d_next = np.zeros_like(d_marg)
+        F_next_marg_num = _marginalize(F_next_num, axis=1)
+        d_next = _marginalize(denom_next[k_idx, :, :, z_bin], axis=1)
         with np.errstate(divide="ignore", invalid="ignore"):
             F_marg = np.where(d_marg > 0, F_marg_num / d_marg, np.nan)
-            F_next_marg = np.where(d_next > 0, F_next_num / d_next, np.nan)
+            F_next_marg = np.where(d_next > 0, F_next_marg_num / d_next, np.nan)
         P_marg = F_marg - F_next_marg
         x = s_mid if center else s_mid + s_med[k_idx, z_bin]
         ax.plot(x, P_marg, marker="o", ms=3, label=f"k={result['k_values'][k_idx]}")
@@ -603,29 +631,24 @@ def plot_marginal_eta(result: dict, *, ax=None, k_indices: Optional[Sequence[int
     plt = _need_mpl()
     if ax is None:
         _, ax = plt.subplots()
-    P = result["P"]
-    denom = result["denominator"]
-    F_num = result["F"] * denom
+    F = result["F"]; F_next = result["F_next"]
+    denom = result["denominator"]; denom_next = result["denominator_next"]
     e_e = result["eta_tilde_edges"]
     eta_med = result["eta_med"]
-    n_k = P.shape[0]
+    n_k = F.shape[0]
     if k_indices is None:
         k_indices = list(range(n_k))
     e_mid = _midpoints(e_e)
     for k_idx in k_indices:
-        F_marg_num = _marginalize(F_num[k_idx, :, :, z_bin], axis=0)
+        F_num = F[k_idx, :, :, z_bin] * denom[k_idx, :, :, z_bin]
+        F_next_num = F_next[k_idx, :, :, z_bin] * denom_next[k_idx, :, :, z_bin]
+        F_marg_num = _marginalize(F_num, axis=0)
         d_marg = _marginalize(denom[k_idx, :, :, z_bin], axis=0)
-        if k_idx + 1 < denom.shape[0]:
-            F_next_num = _marginalize(
-                result["F"][k_idx + 1, :, :, z_bin] * denom[k_idx + 1, :, :, z_bin], axis=0
-            )
-            d_next = _marginalize(denom[k_idx + 1, :, :, z_bin], axis=0)
-        else:
-            F_next_num = np.zeros_like(F_marg_num)
-            d_next = np.zeros_like(d_marg)
+        F_next_marg_num = _marginalize(F_next_num, axis=0)
+        d_next = _marginalize(denom_next[k_idx, :, :, z_bin], axis=0)
         with np.errstate(divide="ignore", invalid="ignore"):
             F_marg = np.where(d_marg > 0, F_marg_num / d_marg, np.nan)
-            F_next_marg = np.where(d_next > 0, F_next_num / d_next, np.nan)
+            F_next_marg = np.where(d_next > 0, F_next_marg_num / d_next, np.nan)
         P_marg = F_marg - F_next_marg
         x = e_mid if center else e_mid + eta_med[k_idx, z_bin]
         ax.plot(x, P_marg, marker="o", ms=3, label=f"k={result['k_values'][k_idx]}")
